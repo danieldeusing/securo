@@ -4,6 +4,7 @@ import time
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Optional
+from urllib.parse import parse_qs, urlparse
 
 import httpx
 
@@ -17,7 +18,9 @@ from app.providers.base import (
     HoldingData,
     RefreshOutcome,
     TransactionData,
+    mask_last4,
 )
+from app.providers.pluggy_constants import pluggy_icon_for_compe
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +51,38 @@ _PLUGGY_REFRESH_USER_ACTION_CODES = {
 }
 
 PLUGGY_API_BASE = "https://api.pluggy.ai"
+
+
+def _compe_from_transfer_number(transfer_number) -> Optional[str]:
+    """Extract the 3-digit COMPE bank code from a Pluggy ``transferNumber``.
+
+    Format is ``"<compe>/<branch>/<account>"`` (e.g. ``"260/0001/06809695-5"``).
+    Returns the zero-padded code, or None when absent/unparseable.
+    """
+    if not isinstance(transfer_number, str) or "/" not in transfer_number:
+        return None
+    code = transfer_number.split("/", 1)[0].strip()
+    return code.zfill(3) if code.isdigit() else None
+
+
+def _resolve_connector_logo(connector: dict, accounts: list[dict]) -> Optional[str]:
+    """Institution logo URL for a Pluggy connection, or None.
+
+    Real connectors expose the bank logo directly in ``imageUrl`` (e.g.
+    Nubank -> ``.../212.svg``). The demo "MeuPluggy" connector returns the
+    generic ``sandbox.svg`` placeholder instead — in that case fall back to
+    the real bank's icon resolved from an account's COMPE code. If neither is
+    available, return None so the frontend shows the account-type icon.
+    """
+    image = connector.get("imageUrl")
+    if image and not image.rstrip("/").endswith("/sandbox.svg"):
+        return image
+    for acc in accounts:
+        compe = _compe_from_transfer_number((acc.get("bankData") or {}).get("transferNumber"))
+        icon = pluggy_icon_for_compe(compe)
+        if icon:
+            return icon
+    return None
 
 
 def _parse_day(value) -> Optional[int]:
@@ -193,6 +228,9 @@ def _build_account_data(acc: dict, type_mapper) -> AccountData:
         minimum_payment=minimum_payment,
         card_brand=card_brand,
         card_level=card_level,
+        # Brazil has no IBAN; Pluggy's `number` is the branch/account number
+        # (or the card number for credit cards), which serves the same purpose.
+        masked_number=mask_last4(acc.get("number")),
     )
 
 
@@ -228,7 +266,7 @@ class PluggyProvider(BankProvider):
                 f"{PLUGGY_API_BASE}/auth",
                 json={
                     "clientId": settings.pluggy_client_id,
-                    "clientSecret": settings.pluggy_client_secret,
+                    "clientSecret": settings.pluggy_client_secret.get_secret_value(),
                 },
             )
             resp.raise_for_status()
@@ -298,10 +336,12 @@ class PluggyProvider(BankProvider):
             accounts_resp.raise_for_status()
             accounts_data = accounts_resp.json()
 
-        institution_name = item_data.get("connector", {}).get("name", "Unknown Bank")
+        connector = item_data.get("connector", {})
+        institution_name = connector.get("name", "Unknown Bank")
 
+        raw_accounts = accounts_data.get("results", [])
         account_list = []
-        for acc in accounts_data.get("results", []):
+        for acc in raw_accounts:
             account_list.append(_build_account_data(acc, self._map_account_type))
 
         return ConnectionData(
@@ -309,7 +349,27 @@ class PluggyProvider(BankProvider):
             institution_name=institution_name,
             credentials={"item_id": item_id},
             accounts=account_list,
+            logo_url=_resolve_connector_logo(connector, raw_accounts),
         )
+
+    async def get_institution_logo(self, credentials: dict) -> Optional[str]:
+        item_id = credentials["item_id"]
+        headers = await self._headers()
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(
+                f"{PLUGGY_API_BASE}/items/{item_id}", headers=headers
+            )
+            resp.raise_for_status()
+            connector = resp.json().get("connector", {})
+            # The connector logo may be the demo placeholder; fetch accounts so
+            # the COMPE-code fallback can recover the real bank icon.
+            accts_resp = await client.get(
+                f"{PLUGGY_API_BASE}/accounts", headers=headers,
+                params={"itemId": item_id},
+            )
+            accts_resp.raise_for_status()
+            raw_accounts = accts_resp.json().get("results", [])
+        return _resolve_connector_logo(connector, raw_accounts)
 
     async def get_accounts(self, credentials: dict) -> list[AccountData]:
         item_id = credentials["item_id"]
@@ -335,27 +395,31 @@ class PluggyProvider(BankProvider):
     ) -> list[TransactionData]:
         headers = await self._headers()
         all_transactions: list[TransactionData] = []
-        page = 1
+        after: Optional[str] = None
 
         async with httpx.AsyncClient(timeout=30.0) as client:
             while True:
-                params: dict = {
-                    "accountId": account_external_id,
-                    "pageSize": 500,
-                    "page": page,
-                }
+                # v2 cursor-based listing. Pluggy deprecated v1 GET
+                # /transactions — it returns 410 ENDPOINT_DEPRECATED on newer
+                # API keys (rolled out per key). /v2/transactions pages via an
+                # opaque `after` cursor (returned in `next`) instead of
+                # page/pageSize.
+                params: dict = {"accountId": account_external_id}
                 if since:
                     # Filter by Pluggy ingestion time, NOT transaction date.
-                    # `from`/`to` filter on `date` (when the txn happened),
-                    # which silently drops transactions Pluggy ingests later
-                    # but backdates — e.g. credit card bill payments dated
-                    # to the bill close, or merchants that settle weeks late.
-                    # `createdAtFrom` filters on Pluggy's row creation time,
-                    # so any newly-ingested row is fetched regardless of date.
+                    # `dateFrom`/`dateTo` filter on `date` (when the txn
+                    # happened), which silently drops transactions Pluggy
+                    # ingests later but backdates — e.g. credit card bill
+                    # payments dated to the bill close, or merchants that
+                    # settle weeks late. `createdAtFrom` filters on Pluggy's
+                    # row creation time, so any newly-ingested row is fetched
+                    # regardless of date. v2 still supports it.
                     params["createdAtFrom"] = since.isoformat()
+                if after:
+                    params["after"] = after
 
                 resp = await client.get(
-                    f"{PLUGGY_API_BASE}/transactions",
+                    f"{PLUGGY_API_BASE}/v2/transactions",
                     headers=headers,
                     params=params,
                 )
@@ -441,12 +505,26 @@ class PluggyProvider(BankProvider):
                         )
                     )
 
-                total_pages = data.get("totalPages", 1)
-                if page >= total_pages:
+                next_after = self._extract_after(data.get("next"))
+                if not next_after or next_after == after:
                     break
-                page += 1
+                after = next_after
 
         return all_transactions
+
+    @staticmethod
+    def _extract_after(next_value: Optional[str]) -> Optional[str]:
+        """Pull the `after` cursor out of v2's `next` field.
+
+        Pluggy returns `next` as a URL carrying the cursor
+        (".../v2/transactions?accountId=...&after=<cursor>"), or null on the
+        last page. Returns None when there's no further page so the caller
+        stops — and never loops on a malformed value.
+        """
+        if not next_value:
+            return None
+        after_vals = parse_qs(urlparse(next_value).query).get("after")
+        return after_vals[0] if after_vals else None
 
     async def refresh_credentials(self, credentials: dict) -> dict:
         # Pluggy manages API keys at the provider level, not per-connection

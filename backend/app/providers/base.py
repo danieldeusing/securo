@@ -18,6 +18,41 @@ from typing import Literal, Optional
 RefreshOutcome = Literal["refreshed", "skipped", "needs_user_action", "failed"]
 
 
+def default_oauth_redirect_uri() -> str:
+    """The OAuth callback URL implied by where the frontend is served.
+
+    Providers fall back to this when their own ``*_OAUTH_REDIRECT_URI`` is
+    unset, so a deployment on a custom port or domain works without setting one
+    variable per provider. Deriving it here rather than in Compose also keeps
+    the compose files free of nested ``${VAR:-${OTHER:-x}}`` interpolation,
+    which podman-compose cannot parse (containers/podman-compose#1064).
+    """
+    from app.core.config import get_settings
+
+    return f"{get_settings().frontend_url.rstrip('/')}/oauth/callback"
+
+
+def mask_last4(value: Optional[str]) -> Optional[str]:
+    """Reduce a bank-assigned account identifier to its last four characters.
+
+    Providers expose different identifiers for the same purpose: an IBAN
+    (Enable Banking), a branch/account number (Pluggy), a card number. They all
+    serve one job here, telling two same-named accounts apart, so we normalize
+    them to a single shape and deliberately keep only the tail. Storing the full
+    identifier would put a payable bank reference in the database for no gain.
+
+    Separators (spaces, dashes) are stripped first, since IBANs are commonly
+    formatted in groups of four. Returns None when the source is missing or too
+    short to mask, so callers never render a partial identifier.
+    """
+    if not value:
+        return None
+    cleaned = "".join(ch for ch in str(value) if ch.isalnum())
+    if len(cleaned) < 4:
+        return None
+    return cleaned[-4:]
+
+
 @dataclass
 class AccountData:
     external_id: str
@@ -31,6 +66,10 @@ class AccountData:
     minimum_payment: Optional[Decimal] = None
     card_brand: Optional[str] = None
     card_level: Optional[str] = None
+    # Last 4 chars of the bank's own identifier for the account, when the
+    # provider exposes one. Disambiguates accounts a bank reports under an
+    # identical name (issue #408). Never the full identifier — see mask_last4.
+    masked_number: Optional[str] = None
 
 
 @dataclass
@@ -62,6 +101,10 @@ class ConnectionData:
     institution_name: str
     credentials: dict
     accounts: list[AccountData]
+    # Fully-formed institution logo URL when the provider exposes one
+    # (Pluggy connector.imageUrl, Enable Banking ASPSP logo). None for
+    # providers/institutions without a logo (e.g. SimpleFin).
+    logo_url: Optional[str] = None
 
 
 @dataclass
@@ -107,6 +150,11 @@ class HoldingData:
     purchase_price: Optional[Decimal] = None
     purchase_date: Optional[date] = None
     isin: Optional[str] = None
+    # Exchange/asset symbol (e.g. "AAPL", "DOGE") for the dedicated
+    # `assets.ticker` column. Kept separate from `currency`: connectors that
+    # report a crypto position put the ticker in both, and only one of them
+    # belongs in a 3-char ISO currency field.
+    ticker: Optional[str] = None
     maturity_date: Optional[date] = None
     is_withdrawn: bool = False  # provider signaled the position was sold/transferred
     metadata: Optional[dict] = None
@@ -149,6 +197,16 @@ class ProviderUserActionRequired(Exception):
         super().__init__(message)
         self.code = code
         self.help_url = help_url
+
+
+class ProviderRateLimited(Exception):
+    """Raised when the upstream bank/aggregator is throttling data requests.
+
+    Transient and outside the user's control — PSD2 caps unattended account
+    access (commonly ~4/day per resource), so a burst of syncs returns HTTP
+    429. The connection is healthy; callers should skip this run and retry
+    later rather than flag it as errored.
+    """
 
 
 class FxRateProvider(ABC):
@@ -196,11 +254,13 @@ class BankProvider(ABC):
         Each provider reads its own env var (e.g.
         ``PLUGGY_OAUTH_REDIRECT_URI``, ``ENABLE_BANKING_OAUTH_REDIRECT_URI``)
         so different providers can register different URLs in their
-        respective dashboards.
+        respective dashboards. When unset the URL is derived from
+        ``FRONTEND_URL`` so a non-default port or domain works out of the box.
         """
         from app.core.config import get_settings
 
-        return get_settings().pluggy_oauth_redirect_uri
+        settings = get_settings()
+        return settings.pluggy_oauth_redirect_uri or default_oauth_redirect_uri()
 
     async def create_connect_token(
         self, client_user_id: str, item_id: str | None = None
@@ -279,6 +339,16 @@ class BankProvider(ABC):
         already serve live data on every read don't need to override.
         """
         return "skipped"
+
+    async def get_institution_logo(self, credentials: dict) -> Optional[str]:
+        """Return the institution logo URL for an existing connection, or None.
+
+        Used to backfill connections that were linked before logo capture
+        existed (the sync layer calls this only when a connection has no
+        stored logo). Default is no-op so providers without institution
+        logos (e.g. SimpleFin) don't need to implement it.
+        """
+        return None
 
     async def get_holdings(self, credentials: dict) -> list[HoldingData]:
         """Fetch investment holdings for a connection.

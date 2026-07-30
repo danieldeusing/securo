@@ -6,6 +6,7 @@ import { toast } from 'sonner'
 import { useAuth } from '@/contexts/auth-context'
 import { useWorkspace } from '@/contexts/workspace-context'
 import { workspaces as workspacesApi } from '@/lib/api'
+import { resolveSupportedLang } from '@/lib/i18n'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -42,6 +43,7 @@ import {
   Shield,
   ShieldCheck,
   Sparkles,
+  Fingerprint,
 } from 'lucide-react'
 import { CategoryIcon } from '@/components/category-icon'
 import type { Workspace } from '@/types'
@@ -76,6 +78,8 @@ interface AccountMenuProps {
   onChangePassword: () => void
   /** Open the 2FA setup dialog. */
   onTwoFactor: () => void
+  /** Open the passkey management dialog. */
+  onPasskeys: () => void
   /** Trigger a backup download. */
   onBackup: () => void
   /** Open the "Update available" dialog. */
@@ -97,6 +101,7 @@ export function WorkspaceSwitcher({
   backingUp,
   onChangePassword,
   onTwoFactor,
+  onPasskeys,
   onBackup,
   onUpdateAvailable,
   agentsEnabled,
@@ -108,13 +113,14 @@ export function WorkspaceSwitcher({
   const [createOpen, setCreateOpen] = useState(false)
   const [newName, setNewName] = useState('')
 
-  const currentLang = i18n.language?.startsWith('pt') ? 'pt-BR' : 'en'
+  const currentLang = resolveSupportedLang(i18n.resolvedLanguage ?? i18n.language)
 
   const createMutation = useMutation({
     mutationFn: () =>
       workspacesApi.create({
         name: newName.trim(),
         self_membership: true,
+        locale: currentLang,
       }),
     onSuccess: async (ws) => {
       toast.success(t('workspace.createSuccess', 'Workspace created'))
@@ -240,6 +246,13 @@ export function WorkspaceSwitcher({
             {t('auth.twoFactorTitle')}
           </DropdownMenuItem>
           <DropdownMenuItem
+            onClick={onPasskeys}
+            className="flex items-center gap-2"
+          >
+            <Fingerprint size={14} />
+            {t('auth.passkeysTitle')}
+          </DropdownMenuItem>
+          <DropdownMenuItem
             disabled={backingUp}
             onClick={onBackup}
             className="flex items-center gap-2"
@@ -272,7 +285,7 @@ export function WorkspaceSwitcher({
               <Languages size={14} />
               <span className="flex-1">{t('setup.language')}</span>
               <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                {currentLang === 'pt-BR' ? 'PT' : 'EN'}
+                {currentLang.split('-')[0]}
               </span>
             </DropdownMenuSubTrigger>
             <DropdownMenuPortal>
@@ -281,11 +294,39 @@ export function WorkspaceSwitcher({
                   {t('setup.language')}
                 </DropdownMenuLabel>
                 <DropdownMenuItem
+                  onClick={() => i18n.changeLanguage('ru')}
+                  className="flex items-center gap-2"
+                >
+                  <span className="flex-1">Русский</span>
+                  {currentLang === 'ru' && <Check size={13} className="text-primary" />}
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => i18n.changeLanguage('de')}
+                  className="flex items-center gap-2"
+                >
+                  <span className="flex-1">Deutsch</span>
+                  {currentLang === 'de' && <Check size={13} className="text-primary" />}
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => i18n.changeLanguage('uk')}
+                  className="flex items-center gap-2"
+                >
+                  <span className="flex-1">Українська</span>
+                  {currentLang === 'uk' && <Check size={13} className="text-primary" />}
+                </DropdownMenuItem>
+                <DropdownMenuItem
                   onClick={() => i18n.changeLanguage('pt-BR')}
                   className="flex items-center gap-2"
                 >
-                  <span className="flex-1">Português</span>
+                  <span className="flex-1">Português (BR)</span>
                   {currentLang === 'pt-BR' && <Check size={13} className="text-primary" />}
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => i18n.changeLanguage('pt-PT')}
+                  className="flex items-center gap-2"
+                >
+                  <span className="flex-1">Português (PT)</span>
+                  {currentLang === 'pt-PT' && <Check size={13} className="text-primary" />}
                 </DropdownMenuItem>
                 <DropdownMenuItem
                   onClick={() => i18n.changeLanguage('en')}
@@ -293,6 +334,34 @@ export function WorkspaceSwitcher({
                 >
                   <span className="flex-1">English</span>
                   {currentLang === 'en' && <Check size={13} className="text-primary" />}
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => i18n.changeLanguage('es')}
+                  className="flex items-center gap-2"
+                >
+                  <span className="flex-1">Español</span>
+                  {currentLang === 'es' && <Check size={13} className="text-primary" />}
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => i18n.changeLanguage('pl')}
+                  className="flex items-center gap-2"
+                >
+                  <span className="flex-1">Polski</span>
+                  {currentLang === 'pl' && <Check size={13} className="text-primary" />}
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => i18n.changeLanguage('it')}
+                  className="flex items-center gap-2"
+                >
+                  <span className="flex-1">Italiano</span>
+                  {currentLang === 'it' && <Check size={13} className="text-primary" />}
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => i18n.changeLanguage('fr')}
+                  className="flex items-center gap-2"
+                >
+                  <span className="flex-1">Français</span>
+                  {currentLang === 'fr' && <Check size={13} className="text-primary" />}
                 </DropdownMenuItem>
               </DropdownMenuSubContent>
             </DropdownMenuPortal>

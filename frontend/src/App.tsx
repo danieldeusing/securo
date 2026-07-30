@@ -5,6 +5,7 @@ import { Toaster } from '@/components/ui/sonner'
 import { ThemeProvider } from '@/components/theme-provider'
 import { AuthProvider } from '@/contexts/auth-context'
 import { WorkspaceProvider } from '@/contexts/workspace-context'
+import { CollectionFilterProvider } from '@/contexts/collection-filter-context'
 import { ProtectedRoute } from '@/components/protected-route'
 import { AdminRoute } from '@/components/admin-route'
 import { AgentsRoute } from '@/components/agents-route'
@@ -21,6 +22,7 @@ const AccountDetailPage = lazy(() => import('@/pages/account-detail'))
 const ImportPage = lazy(() => import('@/pages/import'))
 const RulesPage = lazy(() => import('@/pages/rules'))
 const CategoriesPage = lazy(() => import('@/pages/categories'))
+const CollectionsPage = lazy(() => import('@/pages/collections'))
 const BudgetsPage = lazy(() => import('@/pages/budgets'))
 const RecurringPage = lazy(() => import('@/pages/recurring'))
 const GoalsPage = lazy(() => import('@/pages/goals'))
@@ -35,6 +37,7 @@ const AgentDetailPage = lazy(() => import('@/pages/agent-detail'))
 const AgentConnectionsPage = lazy(() => import('@/pages/agent-connections'))
 const WorkspaceSettingsPage = lazy(() => import('@/pages/workspace-settings'))
 const OAuthCallbackPage = lazy(() => import('@/pages/oauth-callback'))
+const OIDCCallbackPage = lazy(() => import('@/pages/oidc-callback'))
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -65,11 +68,14 @@ function App() {
               <Routes>
                 <Route path="/setup" element={<SetupPage />} />
                 <Route path="/login" element={<LoginPage />} />
+                <Route path="/auth/oidc/callback" element={<OIDCCallbackPage />} />
                 <Route path="/register" element={<RegisterPage />} />
                 <Route
                   element={
                     <ProtectedRoute>
-                      <AppLayout />
+                      <CollectionFilterProvider>
+                        <AppLayout />
+                      </CollectionFilterProvider>
                     </ProtectedRoute>
                   }
                 >
@@ -82,6 +88,7 @@ function App() {
                   <Route path="/import" element={<ImportPage />} />
                   <Route path="/rules" element={<RulesPage />} />
                   <Route path="/categories" element={<CategoriesPage />} />
+                  <Route path="/collections" element={<CollectionsPage />} />
                   <Route path="/budgets" element={<BudgetsPage />} />
                   <Route path="/goals" element={<GoalsPage />} />
                   <Route path="/recurring" element={<RecurringPage />} />

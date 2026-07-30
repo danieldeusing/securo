@@ -1,15 +1,24 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { getAccountName } from '@/lib/account-utils'
+import { currentMonth, shiftMonth, monthLastDay, monthLabel, monthRange } from '@/lib/month-utils'
 import { useTranslation } from 'react-i18next'
+import { useDisplayLocale, useDateLocale } from '@/hooks/use-display-locale'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { format } from 'date-fns'
-import { ptBR, enUS } from 'date-fns/locale'
-import { dashboard, transactions, budgets, categories as categoriesApi, categoryGroups as categoryGroupsApi, accounts as accountsApi, goals as goalsApi, groups as groupsApi } from '@/lib/api'
+import { dashboard, transactions, budgets, categories as categoriesApi, categoryGroups as categoryGroupsApi, accounts as accountsApi, goals as goalsApi, groups as groupsApi, payees as payeesApi, rules as rulesApi } from '@/lib/api'
 import { invalidateFinancialQueries } from '@/lib/invalidate-queries'
+import { toast } from 'sonner'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Button } from '@/components/ui/button'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover'
-import { Calendar } from '@/components/ui/calendar'
+import { MonthPicker } from '@/components/ui/monthpicker'
 import {
   Table,
   TableBody,
@@ -28,43 +37,53 @@ import {
   ResponsiveContainer,
 } from 'recharts'
 import { CheckCircle2, CalendarIcon, Paperclip, Target, ArrowUpDown, HelpCircle, EyeClosed } from 'lucide-react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { ICON_MAP } from '@/lib/category-icons'
 import { PageHeader } from '@/components/page-header'
 import { CategoryIcon } from '@/components/category-icon'
+import { AccountIcon } from '@/components/account-icon'
 import { TransactionDrillDown, type DrillDownFilter } from '@/components/transaction-drill-down'
 import { TransactionDialog, extractApiError } from '@/components/transaction-dialog'
+import { RuleDialog, type RuleDialogInitialData } from '@/components/rule-dialog'
 import { usePrivacyMode } from '@/hooks/use-privacy-mode'
 import { useAuth } from '@/contexts/auth-context'
-import type { Transaction } from '@/types'
+import { useCollectionFilter } from '@/contexts/collection-filter-context'
+import { resolveDateFnsLocale } from '@/lib/date-fns-locale'
+import type { Rule, Transaction } from '@/types'
 
 function formatCurrency(value: number, currency = 'USD', locale = 'en-US') {
   return new Intl.NumberFormat(locale, { style: 'currency', currency }).format(value)
 }
 
-function currentMonth() {
-  const now = new Date()
-  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
-}
-
-function shiftMonth(yearMonth: string, delta: number) {
-  const [y, m] = yearMonth.split('-').map(Number)
-  const d = new Date(y, m - 1 + delta, 1)
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
-}
-
-function monthLastDay(yearMonth: string) {
-  const [y, m] = yearMonth.split('-').map(Number)
-  return new Date(y, m, 0).getDate()
-}
-
-function monthLabel(yearMonth: string, locale = 'pt-BR') {
-  const [y, m] = yearMonth.split('-').map(Number)
-  return new Date(y, m - 1, 2).toLocaleDateString(locale, { month: 'long', year: 'numeric' })
-}
 
 function formatDate(dateStr: string, locale = 'pt-BR') {
   return new Date(dateStr + 'T00:00:00').toLocaleDateString(locale)
+}
+
+function parseHashtags(notes: string | null): string[] {
+  if (!notes) return []
+  const matches = notes.match(/#[\w\u00C0-\u017E-]+/g)
+  return matches ?? []
+}
+
+const MONTH_REGEX = /^\d{4}-\d{2}$/
+const MONTH_STRING_LENGTH = 7
+
+function parseMonthFromParams(params: URLSearchParams): string | null {
+  const monthParam = params.get('month')
+  if (monthParam && MONTH_REGEX.test(monthParam)) {
+    return monthParam
+  }
+
+  const fromParam = params.get('from')
+  if (fromParam && fromParam.length >= MONTH_STRING_LENGTH) {
+    const parsedMonth = fromParam.substring(0, MONTH_STRING_LENGTH)
+    if (MONTH_REGEX.test(parsedMonth)) {
+      return parsedMonth
+    }
+  }
+
+  return null
 }
 
 
@@ -75,7 +94,8 @@ export default function DashboardPage() {
   const { user } = useAuth()
   const userCurrency = user?.preferences?.currency_display ?? 'USD'
   const displayName = user?.preferences?.display_name || ''
-  const locale = i18n.language === 'en' ? 'en-US' : i18n.language
+  const locale = useDisplayLocale()
+  const dateLocale = useDateLocale()
 
   const greeting = (() => {
     const hour = new Date().getHours()
@@ -83,48 +103,98 @@ export default function DashboardPage() {
     const base = t(`dashboard.${key}`)
     return displayName ? `${base}, ${displayName}` : base
   })()
-  const [selectedMonth, setSelectedMonth] = useState(currentMonth)
+  const [searchParams, setSearchParams] = useSearchParams()
+  const [selectedMonth, setSelectedMonth] = useState<string>(() => {
+    return parseMonthFromParams(searchParams) ?? currentMonth()
+  })
   const [drillDown, setDrillDown] = useState<DrillDownFilter | null>(null)
+
+  const prevSearchRef = useRef<string | null>(null)
+
+  // Sync state from URL when navigating (e.g. back/forward button)
+  useEffect(() => {
+    const search = searchParams.toString()
+    if (prevSearchRef.current === search) return
+    const isInitial = prevSearchRef.current === null
+    prevSearchRef.current = search
+
+    const parsedMonth = parseMonthFromParams(searchParams)
+    if (parsedMonth) {
+      setSelectedMonth(parsedMonth)
+    } else if (!isInitial) {
+      setSelectedMonth(currentMonth())
+    }
+  }, [searchParams])
+
+  // Sync selectedMonth back to URL
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    if (selectedMonth) {
+      params.set('month', selectedMonth)
+      params.delete('from')
+      params.delete('to')
+    } else {
+      params.delete('month')
+    }
+
+    setSearchParams(params, { replace: true })
+  }, [selectedMonth, setSearchParams])
   const [editingTx, setEditingTx] = useState<Transaction | null>(null)
   const [dialogOpen, setDialogOpen] = useState(false)
+  const [createRuleOpen, setCreateRuleOpen] = useState(false)
+  const [createRuleInitialData, setCreateRuleInitialData] = useState<RuleDialogInitialData | undefined>(undefined)
   const queryClient = useQueryClient()
   const [headerCalOpen, setHeaderCalOpen] = useState(false)
   const [hoveredDay, setHoveredDay] = useState<number | null>(null)
-  const dateFnsLocale = i18n.language === 'pt-BR' ? ptBR : enUS
-  const monthParam = `${selectedMonth}-01`
-  const monthStart = `${selectedMonth}-01`
-  const monthEnd = `${selectedMonth}-${String(monthLastDay(selectedMonth)).padStart(2, '0')}`
-  const monthLabelStr = monthLabel(selectedMonth, locale)
+  const dateFnsLocale = resolveDateFnsLocale(i18n.resolvedLanguage ?? i18n.language)
+  const { from: monthStart, to: monthEnd } = monthRange(selectedMonth)
+  const monthParam = monthStart
+  const uiLocale = i18n.resolvedLanguage ?? i18n.language
+  const monthLabelStr = monthLabel(selectedMonth, uiLocale)
 
   const handleMonthChange = (newMonth: string) => {
     setSelectedMonth(newMonth)
 }
 
+  // Active Collection filter (issue #105): scope dashboard cards to its
+  // accounts. undefined when "All accounts".
+  const { activeAccountIds, activeWalletIds } = useCollectionFilter()
+  const acctIds = activeAccountIds ?? undefined
+  const walletIds = activeWalletIds ?? undefined
+  // A wallet-only collection (active, but with zero accounts) has no account
+  // data — skip the account-only cards so they render empty instead of
+  // silently falling back to "all accounts".
+  const noAccounts = activeAccountIds !== null && activeAccountIds.length === 0
+
   const { data: summary, isLoading: summaryLoading } = useQuery({
-    queryKey: ['dashboard', 'summary', selectedMonth],
-    queryFn: () => dashboard.summary(monthParam),
+    queryKey: ['dashboard', 'summary', selectedMonth, activeAccountIds, activeWalletIds],
+    queryFn: () => dashboard.summary(monthParam, undefined, acctIds, walletIds),
   })
 
   const { data: spending, isLoading: spendingLoading } = useQuery({
-    queryKey: ['dashboard', 'spending', selectedMonth],
-    queryFn: () => dashboard.spendingByCategory(monthParam),
+    queryKey: ['dashboard', 'spending', selectedMonth, activeAccountIds],
+    queryFn: () => dashboard.spendingByCategory(monthParam, acctIds),
+    enabled: !noAccounts,
   })
 
   const prevMonth = shiftMonth(selectedMonth, -1)
 
   const { data: balanceHistory, isLoading: balanceHistoryLoading } = useQuery({
-    queryKey: ['dashboard', 'balance-history', selectedMonth],
-    queryFn: () => dashboard.balanceHistory(monthParam),
+    queryKey: ['dashboard', 'balance-history', selectedMonth, activeAccountIds],
+    queryFn: () => dashboard.balanceHistory(monthParam, acctIds),
+    enabled: !noAccounts,
   })
 
   const { data: currentMonthTxs, isLoading: currentTxLoading } = useQuery({
-    queryKey: ['transactions', 'cumulative', selectedMonth],
+    queryKey: ['transactions', 'cumulative', selectedMonth, activeAccountIds],
     queryFn: () => transactions.list({
-      from: `${selectedMonth}-01`,
-      to: `${selectedMonth}-${String(monthLastDay(selectedMonth)).padStart(2, '0')}`,
+      from: monthStart,
+      to: monthEnd,
       limit: 500,
       exclude_transfers: true,
+      account_ids: acctIds,
     }),
+    enabled: !noAccounts,
   })
 
   // Resolve group_id → name for the badge on split transactions.
@@ -164,6 +234,11 @@ export default function DashboardPage() {
     queryFn: () => accountsApi.list(),
   })
 
+  const { data: payeesList } = useQuery({
+    queryKey: ['payees'],
+    queryFn: payeesApi.list,
+  })
+
   const { data: goalsSummary } = useQuery({
     queryKey: ['goals', 'summary'],
     queryFn: () => goalsApi.summary(3),
@@ -196,6 +271,49 @@ export default function DashboardPage() {
       setEditingTx(null)
     },
   })
+
+  const createRuleMutation = useMutation({
+    mutationFn: (data: Omit<Rule, 'id' | 'user_id'>) => rulesApi.create(data),
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: ['rules'] })
+      setCreateRuleOpen(false)
+      setCreateRuleInitialData(undefined)
+      const applied = result.applied_count ?? 0
+      if (applied > 0) {
+        invalidateFinancialQueries(queryClient)
+        queryClient.invalidateQueries({ queryKey: ['payees'] })
+        toast.success(t('rules.createdAndApplied', { count: applied }))
+      } else {
+        toast.success(t('rules.created'))
+      }
+    },
+    onError: (error: unknown) => {
+      const err = error as { response?: { status?: number } }
+      if (err?.response?.status === 409) {
+        toast.error(t('rules.duplicateName'))
+      } else {
+        toast.error(t('common.error'))
+      }
+    },
+  })
+
+  const handleCreateRuleFromTransaction = (tx: Transaction) => {
+    const conditions = [
+      { field: 'description', op: 'contains', value: tx.description },
+    ]
+    if (tx.payee_id) {
+      conditions.push({ field: 'payee_id', op: 'equals', value: tx.payee_id })
+    }
+    const actions = tx.category_id
+      ? [{ op: 'set_category', value: tx.category_id }]
+      : [{ op: 'set_category', value: '' }]
+    const tags = parseHashtags(tx.notes)
+    if (tags.length > 0) {
+      actions.push({ op: 'append_notes', value: tags.join(' ') })
+    }
+    setCreateRuleInitialData({ conditions, actions })
+    setCreateRuleOpen(true)
+  }
 
 
   const cumulativeData = useMemo(() => {
@@ -295,6 +413,7 @@ export default function DashboardPage() {
     categoryIcon: string | null
     categoryName: string | null
     categoryColor: string | null
+    accountId: string | null
     isProjected: boolean
     attachmentCount: number
     isShared: boolean
@@ -309,7 +428,14 @@ export default function DashboardPage() {
     isIgnored: boolean
   }
 
-  const TX_PER_PAGE = 10
+  const [txPerPage, setTxPerPage] = useState<number>(() => {
+    try {
+      const stored = localStorage.getItem('securo.dashboard.pageSize')
+      return stored ? Number(stored) : 10
+    } catch {
+      return 10
+    }
+  })
   const allDisplayRows = useMemo(() => {
     const rows: DisplayRow[] = []
     for (const tx of currentMonthTxs?.items ?? []) {
@@ -337,6 +463,7 @@ export default function DashboardPage() {
         categoryIcon: tx.category?.icon ?? null,
         categoryName: tx.category?.name ?? null,
         categoryColor: tx.category?.color ?? null,
+        accountId: tx.account_id ?? null,
         isProjected: false,
         attachmentCount: tx.attachment_count ?? 0,
         isShared,
@@ -360,6 +487,7 @@ export default function DashboardPage() {
         categoryIcon: pt.category_icon,
         categoryName: pt.category_name,
         categoryColor: pt.category_color ?? null,
+        accountId: null,
         isProjected: true,
         attachmentCount: 0,
         isShared: false,
@@ -368,15 +496,15 @@ export default function DashboardPage() {
         groupId: null,
         parentOwnerName: null,
         groupName: null,
-        isIgnored: pt.is_ignored
+        isIgnored: false
       })
     }
     rows.sort((a, b) => txSortDesc ? b.date.localeCompare(a.date) : a.date.localeCompare(b.date))
     return rows
   }, [currentMonthTxs, projectedTxs, txSortDesc, groupNameById])
 
-  const txTotalPages = Math.ceil(allDisplayRows.length / TX_PER_PAGE)
-  const pagedRows = allDisplayRows.slice((txPage - 1) * TX_PER_PAGE, txPage * TX_PER_PAGE)
+  const txTotalPages = Math.ceil(allDisplayRows.length / txPerPage)
+  const pagedRows = allDisplayRows.slice((txPage - 1) * txPerPage, txPage * txPerPage)
   const txListLoading = currentTxLoading || projectedTxLoading
 
   // Savings rate display
@@ -397,7 +525,7 @@ export default function DashboardPage() {
       {/* Header */}
       <PageHeader
         section={greeting}
-        title={new Date(selectedMonth + '-02').toLocaleDateString(locale, { month: 'long', year: 'numeric' }).replace(/^\w/, c => c.toUpperCase())}
+        title={monthLabel(selectedMonth, uiLocale).replace(/^\w/, c => c.toUpperCase())}
         action={
           <div className="flex items-center gap-1">
             <button
@@ -411,16 +539,14 @@ export default function DashboardPage() {
                   className="inline-flex items-center justify-center gap-2 border border-border rounded-lg px-3 py-1.5 text-sm bg-card text-foreground hover:bg-muted/50 transition-all cursor-pointer min-w-[180px]"
                 >
                   <CalendarIcon className="size-3.5 text-muted-foreground" />
-                  {new Date(selectedMonth + '-02').toLocaleDateString(locale, { month: 'long', year: 'numeric' }).replace(/^\w/, c => c.toUpperCase())}
+                  {monthLabel(selectedMonth, uiLocale).replace(/^\w/, c => c.toUpperCase())}
                 </button>
               </PopoverTrigger>
               <PopoverContent align="center" className="w-auto p-0">
-                <Calendar
-                  mode="single"
+                <MonthPicker
                   locale={dateFnsLocale}
-                  selected={new Date(`${selectedMonth}-01T00:00:00`)}
-                  defaultMonth={new Date(`${selectedMonth}-01T00:00:00`)}
-                  onSelect={(date) => {
+                  selectedMonth={new Date(`${selectedMonth}-01T00:00:00`)}
+                  onMonthSelect={(date) => {
                     if (!date) return
                     const newMonth = format(date, 'yyyy-MM')
                     setSelectedMonth(newMonth)
@@ -698,7 +824,7 @@ export default function DashboardPage() {
               <div>
                 <p className="text-base font-bold text-foreground">{t('dashboard.balanceFlow')}</p>
                 <p className="text-xs text-muted-foreground mt-0.5">
-                  {new Date(`${selectedMonth}-01T00:00:00`).toLocaleDateString(locale)} → {new Date(`${selectedMonth}-${String(lastCurrentPoint?.day ?? monthLastDay(selectedMonth)).padStart(2, '0')}T00:00:00`).toLocaleDateString(locale)}
+                  {new Date(`${selectedMonth}-01T00:00:00`).toLocaleDateString(dateLocale)} → {new Date(`${selectedMonth}-${String(lastCurrentPoint?.day ?? monthLastDay(selectedMonth)).padStart(2, '0')}T00:00:00`).toLocaleDateString(dateLocale)}
                 </p>
               </div>
               {!balanceHistoryLoading && lastCurrentPoint && (
@@ -733,7 +859,7 @@ export default function DashboardPage() {
                       const day = String(payload[0].payload.day).padStart(2, '0')
                       const dateStr = `${selectedMonth}-${day}`
                       setDrillDown({
-                        title: t('dashboard.drillDownDay', { date: new Date(dateStr + 'T00:00:00').toLocaleDateString(locale) }),
+                        title: t('dashboard.drillDownDay', { date: new Date(dateStr + 'T00:00:00').toLocaleDateString(dateLocale) }),
                         from: dateStr,
                         to: dateStr,
                       })
@@ -772,7 +898,7 @@ export default function DashboardPage() {
                   <Tooltip
                     formatter={(value, name) => [
                       value !== null ? (privacyMode ? MASK : formatCurrency(Number(value), userCurrency, locale)) : '\u2014',
-                      name === 'current' ? monthLabel(selectedMonth, locale).split(' ')[0] : monthLabel(prevMonth, locale).split(' ')[0],
+                      name === 'current' ? monthLabel(selectedMonth, uiLocale).split(' ')[0] : monthLabel(prevMonth, uiLocale).split(' ')[0],
                     ]}
                     labelFormatter={(day) => t('dashboard.day', { day })}
                     contentStyle={{
@@ -819,7 +945,7 @@ export default function DashboardPage() {
               <div className="px-5 pb-4 pt-0 shrink-0">
                 <p className="text-xs text-muted-foreground">
                   {t('dashboard.balanceFlowVsPrev', {
-                    month: monthLabel(prevMonth, locale).split(' ')[0],
+                    month: monthLabel(prevMonth, uiLocale).split(' ')[0],
                     day: footerDay,
                     amount: mask(formatCurrency(footerPrev, userCurrency, locale)),
                     delta: `${footerPct >= 0 ? '+' : ''}${footerPct.toFixed(1)}%`,
@@ -930,7 +1056,9 @@ export default function DashboardPage() {
               <Table>
                 <TableHeader>
                   <TableRow className="border-b border-border hover:bg-transparent">
-                    <TableHead className="pl-5 text-xs font-medium text-muted-foreground">{t('transactions.description')}</TableHead>
+                    <TableHead className="pl-5 text-xs font-medium text-muted-foreground hidden sm:table-cell">{t('transactions.date')}</TableHead>
+                    <TableHead className="text-xs font-medium text-muted-foreground">{t('transactions.description')}</TableHead>
+                    <TableHead className="text-xs font-medium text-muted-foreground hidden sm:table-cell">{t('transactions.account')}</TableHead>
                     <TableHead className="pr-5 text-right text-xs font-medium text-muted-foreground">{t('transactions.amount')}</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -957,7 +1085,10 @@ export default function DashboardPage() {
                         if (tx) { setEditingTx(tx); setDialogOpen(true) }
                       }}
                     >
-                      <TableCell className="py-2.5 pl-5">
+                      <TableCell className="py-2.5 pl-5 text-sm text-muted-foreground tabular-nums whitespace-nowrap hidden sm:table-cell">
+                        {formatDate(row.date, dateLocale)}
+                      </TableCell>
+                      <TableCell className="py-2.5 pl-5 sm:pl-0">
                         <div className="flex items-center gap-3">
                           <CategoryIcon icon={row.categoryIcon} color={row.categoryColor} size="lg" />
                           <div className="min-w-0">
@@ -986,9 +1117,23 @@ export default function DashboardPage() {
                                 <Paperclip size={12} className="text-muted-foreground shrink-0" />
                               )}
                             </div>
-                            <p className="text-xs text-muted-foreground">{formatDate(row.date, locale)}</p>
+                            <p className="text-xs text-muted-foreground sm:hidden">{formatDate(row.date, dateLocale)}</p>
                           </div>
                         </div>
+                      </TableCell>
+                      <TableCell className="py-2.5 text-sm text-muted-foreground hidden sm:table-cell">
+                        {(() => {
+                          const acc = row.accountId
+                            ? accountsList?.find((a) => a.id === row.accountId)
+                            : undefined
+                          if (!acc) return <span className="text-muted-foreground">—</span>
+                          return (
+                            <span className="flex items-center gap-2 min-w-0">
+                              <AccountIcon account={acc} size="sm" />
+                              <span className="truncate">{getAccountName(acc)}</span>
+                            </span>
+                          )
+                        })()}
                       </TableCell>
                       <TableCell className="py-2.5 pr-5 text-right">
                         <span className={`text-sm font-semibold tabular-nums ${row.isIgnored ? 'text-gray-500' : row.type === 'credit' ? 'text-emerald-600' : 'text-rose-500'}`}>
@@ -1018,27 +1163,61 @@ export default function DashboardPage() {
                   ))}
                 </TableBody>
               </Table>
-              {txTotalPages > 1 && (
-                <div className="flex items-center justify-center gap-2 py-4 border-t border-border">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={txPage <= 1}
-                    onClick={() => setTxPage(txPage - 1)}
-                  >
-                    {t('dashboard.previous')}
-                  </Button>
-                  <span className="text-sm text-muted-foreground">
-                    {txPage} / {txTotalPages}
-                  </span>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={txPage >= txTotalPages}
-                    onClick={() => setTxPage(txPage + 1)}
-                  >
-                    {t('dashboard.next')}
-                  </Button>
+              {allDisplayRows.length > 10 && (
+                <div className="flex flex-col sm:flex-row items-center justify-between gap-4 px-5 py-4 border-t border-border">
+                  <div className="hidden sm:block w-32" />
+                  {txTotalPages > 1 ? (
+                    <div className="flex items-center justify-center gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={txPage <= 1}
+                        onClick={() => setTxPage(txPage - 1)}
+                      >
+                        {t('dashboard.previous')}
+                      </Button>
+                      <span className="text-sm text-muted-foreground">
+                        {txPage} / {txTotalPages}
+                      </span>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={txPage >= txTotalPages}
+                        onClick={() => setTxPage(txPage + 1)}
+                      >
+                        {t('dashboard.next')}
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="hidden sm:block" />
+                  )}
+
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-muted-foreground">{t('common.rowsPerPage', 'Rows per page')}</span>
+                    <Select
+                      value={String(txPerPage)}
+                      onValueChange={(val) => {
+                        const nextLimit = Number(val)
+                        setTxPerPage(nextLimit)
+                        setTxPage(1)
+                        try {
+                          localStorage.setItem('securo.dashboard.pageSize', String(nextLimit))
+                        } catch {
+                          // ignored
+                        }
+                      }}
+                    >
+                      <SelectTrigger className="w-[70px] h-8 text-xs">
+                        <SelectValue placeholder={txPerPage} />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="10">10</SelectItem>
+                        <SelectItem value="20">20</SelectItem>
+                        <SelectItem value="50">50</SelectItem>
+                        <SelectItem value="100">100</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
                 </div>
               )}
             </>
@@ -1049,7 +1228,17 @@ export default function DashboardPage() {
       </div>
 
       <TransactionDrillDown
-        filter={drillDown}
+        filter={
+          drillDown
+            ? {
+                ...drillDown,
+                // Keep drill-downs consistent with the collection-scoped cards
+                // they open from (e.g. "Categorize now").
+                account_ids:
+                  drillDown.account_ids ?? (acctIds && acctIds.length > 0 ? acctIds : undefined),
+              }
+            : null
+        }
         onClose={() => setDrillDown(null)}
         onTransactionClick={(tx) => { setEditingTx(tx); setDialogOpen(true) }}
       />
@@ -1068,9 +1257,28 @@ export default function DashboardPage() {
           if (editingTx) deleteMutation.mutate(editingTx.id)
         }}
         onUnlinkTransfer={(pairId) => unlinkTransferMutation.mutate(pairId)}
+        onCreateRule={(tx) => {
+          setDialogOpen(false)
+          setEditingTx(null)
+          handleCreateRuleFromTransaction(tx)
+        }}
         loading={updateMutation.isPending || deleteMutation.isPending || unlinkTransferMutation.isPending}
         error={updateMutation.error ? extractApiError(updateMutation.error) : deleteMutation.error ? extractApiError(deleteMutation.error) : null}
-        isSynced={!!editingTx?.external_id}
+        isSynced={editingTx?.source === 'sync'}
+      />
+
+      <RuleDialog
+        key={createRuleOpen ? 'rule-open' : 'rule-closed'}
+        open={createRuleOpen}
+        onClose={() => { setCreateRuleOpen(false); setCreateRuleInitialData(undefined) }}
+        rule={null}
+        categories={categoriesList ?? []}
+        categoryGroups={categoryGroupsList ?? []}
+        accounts={(accountsList ?? []).map((a: { id: string; name: string; display_name?: string | null }) => ({ id: a.id, name: getAccountName(a) }))}
+        payees={payeesList ?? []}
+        onSave={(data) => createRuleMutation.mutate(data as Omit<Rule, 'id' | 'user_id'>)}
+        loading={createRuleMutation.isPending}
+        initialData={createRuleInitialData}
       />
     </div>
   )

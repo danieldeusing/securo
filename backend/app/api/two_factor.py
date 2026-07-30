@@ -1,3 +1,4 @@
+import json
 import uuid
 
 import pyotp
@@ -7,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import current_active_user, get_jwt_strategy
 from app.core.database import get_async_session
+from app.core.rate_limit import login_rate_limit
 from app.core.redis import get_redis
 from app.models.user import User
 from app.schemas.two_factor import (
@@ -17,6 +19,24 @@ from app.schemas.two_factor import (
 )
 
 router = APIRouter()
+TOTP_VALID_WINDOW = 1
+
+
+def _verify_totp(secret: str, code: str) -> bool:
+    return pyotp.TOTP(secret).verify(code, valid_window=TOTP_VALID_WINDOW)
+
+
+def _parse_temp_token_payload(raw: str | bytes) -> dict[str, object] | None:
+    if isinstance(raw, bytes):
+        raw = raw.decode()
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        # Backward compatibility with existing temp tokens that only stored user_id.
+        return {"user_id": raw, "available_methods": ["totp"]}
+    if not isinstance(payload, dict) or not isinstance(payload.get("user_id"), str):
+        return None
+    return payload
 
 
 @router.post("/2fa/setup", response_model=TwoFactorSetupResponse)
@@ -44,8 +64,7 @@ async def enable_2fa(
     if not user.totp_secret:
         raise HTTPException(status_code=400, detail="Call /2fa/setup first")
 
-    totp = pyotp.TOTP(user.totp_secret)
-    if not totp.verify(body.code):
+    if not _verify_totp(user.totp_secret, body.code):
         raise HTTPException(status_code=400, detail="Invalid 2FA code")
 
     user.is_2fa_enabled = True
@@ -77,8 +96,7 @@ async def disable_2fa(
     if not user.totp_secret:
         raise HTTPException(status_code=400, detail="2FA is not set up")
 
-    totp = pyotp.TOTP(user.totp_secret)
-    if not totp.verify(body.code):
+    if not _verify_totp(user.totp_secret, body.code):
         raise HTTPException(status_code=400, detail="Invalid 2FA code")
 
     user.totp_secret = None
@@ -88,27 +106,31 @@ async def disable_2fa(
     return {"detail": "2FA disabled"}
 
 
-@router.post("/2fa/verify")
+@router.post("/2fa/verify", dependencies=[Depends(login_rate_limit)])
 async def verify_2fa(
     body: TwoFactorVerifyRequest,
     session: AsyncSession = Depends(get_async_session),
 ):
     r = await get_redis()
     redis_key = f"2fa_temp:{body.temp_token}"
-    user_id_str = await r.get(redis_key)
+    raw_payload = await r.get(redis_key)
 
-    if not user_id_str:
+    if not raw_payload:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
+    payload = _parse_temp_token_payload(raw_payload)
+    available_methods = payload.get("available_methods", []) if payload else []
+    if payload is None or not isinstance(available_methods, list) or "totp" not in available_methods:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
     # Load user
-    result = await session.execute(select(User).where(User.id == uuid.UUID(user_id_str)))
+    result = await session.execute(select(User).where(User.id == uuid.UUID(str(payload["user_id"]))))
     user = result.scalar_one_or_none()
-    if not user or not user.totp_secret:
+    if not user or not (user.is_2fa_enabled and user.totp_secret):
         raise HTTPException(status_code=401, detail="Invalid token")
 
     # Verify TOTP
-    totp = pyotp.TOTP(user.totp_secret)
-    if not totp.verify(body.code):
+    if not _verify_totp(user.totp_secret, body.code):
         raise HTTPException(status_code=400, detail="Invalid 2FA code")
 
     # Delete temp token

@@ -2,6 +2,7 @@ import { useState, useRef, useCallback } from 'react'
 import { Navigate } from 'react-router-dom'
 import { getAccountName } from '@/lib/account-utils'
 import { useTranslation } from 'react-i18next'
+import { useDisplayLocale, useDateLocale } from '@/hooks/use-display-locale'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useFeatureFlags } from '@/hooks/use-feature-flags'
 import { transactions as transactionsApi, accounts as accountsApi, importLogs as importLogsApi, categories as categoriesApi, categoryGroups as categoryGroupsApi } from '@/lib/api'
@@ -47,7 +48,7 @@ function toReviewTransactions(txns: ImportPreviewTransaction[]): ImportReviewTra
 }
 
 export default function ImportPage() {
-  const { t, i18n } = useTranslation()
+  const { t } = useTranslation()
   const { user } = useAuth()
   const { demoMode } = useFeatureFlags()
   // Disabled in demo mode — uploads survive only until the hourly reset
@@ -55,7 +56,8 @@ export default function ImportPage() {
   if (demoMode) return <Navigate to="/" replace />
   const { canWrite } = useWorkspace()
   const userCurrency = user?.preferences?.currency_display ?? 'USD'
-  const locale = i18n.language === 'en' ? 'en-US' : i18n.language
+  const locale = useDisplayLocale()
+  const dateLocale = useDateLocale()
   const queryClient = useQueryClient()
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [previewData, setPreviewData] = useState<{ transactions: ImportPreviewTransaction[]; detected_format: string; csv_columns?: string[]; parse_error?: string | null } | null>(null)
@@ -535,6 +537,7 @@ export default function ImportPage() {
             groups={categoryGroupsList}
             userCurrency={userCurrency}
             locale={locale}
+            dateLocale={dateLocale}
             searchQuery={searchQuery}
             filterCategoryIds={filterCategoryIds}
             filterUncategorized={filterUncategorized}
@@ -559,7 +562,7 @@ export default function ImportPage() {
             </button>
             <Button
               onClick={() => importMutation.mutate()}
-              disabled={!selectedAccount || importMutation.isPending || reviewTransactions.length === 0}
+              disabled={!selectedAccount || importMutation.isPending || includedCount === 0}
               className="gap-2"
             >
               <Upload size={14} />
@@ -594,14 +597,14 @@ export default function ImportPage() {
                   <th className="text-right px-3 sm:px-4 py-3 font-medium text-muted-foreground">{t('import.historyCount')}</th>
                   <th className="text-right px-4 py-3 font-medium text-muted-foreground hidden sm:table-cell">{t('import.historyCredit')}</th>
                   <th className="text-right px-4 py-3 font-medium text-muted-foreground hidden sm:table-cell">{t('import.historyDebit')}</th>
-                  <th className="px-3 sm:px-4 py-3"></th>
+                  <th className="px-3 sm:px-4 py-3" aria-label={t('common.more')}></th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
                 {importHistory.map((log) => (
                   <tr key={log.id} className="hover:bg-muted">
                     <td className="px-3 sm:px-4 py-3 text-xs sm:text-sm text-muted-foreground whitespace-nowrap">
-                      {new Date(log.created_at).toLocaleString(locale, { dateStyle: 'short', timeStyle: 'short' })}
+                      {new Date(log.created_at).toLocaleString(dateLocale, { dateStyle: 'short', timeStyle: 'short' })}
                     </td>
                     <td className="px-3 sm:px-4 py-3 font-mono text-xs text-foreground max-w-[120px] sm:max-w-none truncate">{log.filename || '—'}</td>
                     <td className="px-4 py-3 hidden lg:table-cell">
@@ -622,6 +625,7 @@ export default function ImportPage() {
                         <button
                           onClick={() => setDeleteTarget(log)}
                           className="text-muted-foreground hover:text-rose-500 transition-colors"
+                          aria-label={t('import.undoImport')}
                           title={t('import.undoImport')}
                         >
                           <Trash2 className="w-4 h-4" />

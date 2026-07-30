@@ -1,4 +1,5 @@
 import uuid
+import re
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,6 +24,10 @@ ALLOWED_SETTINGS = {
     "registration_enabled",
     "credit_card_accounting_mode",
     "use_provider_categories",
+    "theme_color_light",
+    "theme_color_dark",
+    "number_format",
+    "date_format",
 }
 
 
@@ -125,12 +130,23 @@ async def update_setting(
         "registration_enabled": {"true", "false"},
         "credit_card_accounting_mode": {"cash", "accrual"},
         "use_provider_categories": {"true", "false"},
+        "number_format": {"auto", "comma_dot", "dot_comma", "space_comma"},
+        "date_format": {"auto", "dmy", "mdy", "ymd"},
     }
+
     if key in SETTING_VALIDATORS and data.value not in SETTING_VALIDATORS[key]:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid value for '{key}'. Allowed: {SETTING_VALIDATORS[key]}",
         )
+
+    if key in ("theme_color_light", "theme_color_dark"):
+        if not re.match(r"^#[0-9A-Fa-f]{6}$", data.value):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid hex color code for '{key}'. Expected format: #RRGGBB",
+            )
+
     setting = await admin_service.set_app_setting(session, key, data.value)
     return AppSettingRead.model_validate(setting)
 
@@ -147,6 +163,15 @@ async def registration_status(
     return {"enabled": enabled}
 
 
+@router.get("/default-colors")
+async def default_colors(
+    session: AsyncSession = Depends(get_async_session),
+):
+    light = await admin_service.get_app_setting(session, "theme_color_light")
+    dark = await admin_service.get_app_setting(session, "theme_color_dark")
+    return {"light": light.value if light else None, "dark": dark.value if dark else None}
+
+
 @router.get("/accounting-mode")
 async def accounting_mode(
     session: AsyncSession = Depends(get_async_session),
@@ -154,6 +179,30 @@ async def accounting_mode(
 ):
     mode = await admin_service.get_credit_card_accounting_mode(session)
     return {"mode": mode}
+
+
+@router.get("/number-format")
+async def number_format(
+    session: AsyncSession = Depends(get_async_session),
+    _user: User = Depends(current_active_user),
+):
+    """Global display format for numbers and dates. Readable by any signed-in
+    user (not just admins) so the frontend can format consistently for everyone.
+    Defaults to 'auto' — derive separators from each user's display currency."""
+    fmt = await admin_service.get_number_format(session)
+    return {"format": fmt}
+
+
+@router.get("/date-format")
+async def date_format(
+    session: AsyncSession = Depends(get_async_session),
+    _user: User = Depends(current_active_user),
+):
+    """Global display format for dates. Readable by any signed-in user.
+    Defaults to 'auto' — derive the field order from the number format /
+    display currency. Month names always follow the user's app language."""
+    fmt = await admin_service.get_date_format(session)
+    return {"format": fmt}
 
 
 async def check_registration_enabled(

@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
+import { useDateLocale } from '@/hooks/use-display-locale'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { currencies as currenciesApi, workspaces as workspacesApi } from '@/lib/api'
+import { auth as authApi, currencies as currenciesApi, workspaces as workspacesApi } from '@/lib/api'
 import { useAuth } from '@/contexts/auth-context'
 import { useWorkspace } from '@/contexts/workspace-context'
 import { Button } from '@/components/ui/button'
@@ -71,10 +72,11 @@ const DEFAULT_WORKSPACE_COLOR = '#6366F1'
 const DEFAULT_WORKSPACE_ICON = 'briefcase'
 
 export default function WorkspaceSettingsPage() {
-  const { t, i18n } = useTranslation()
+  const { t } = useTranslation()
   const navigate = useNavigate()
+  const localeForFormat = useDateLocale()
   const { current, canManage, workspaces: allWorkspaces, refresh, switchWorkspace } = useWorkspace()
-  const { user: currentUser } = useAuth()
+  const { user: currentUser, updateUser } = useAuth()
   const queryClient = useQueryClient()
 
   const [editName, setEditName] = useState('')
@@ -130,6 +132,12 @@ export default function WorkspaceSettingsPage() {
     onSuccess: () => {
       toast.success(t('workspace.saveSuccess'))
       void refresh()
+      // Changing the workspace currency also updates the acting user's
+      // display currency server-side; refresh the cached user so the
+      // whole app re-renders in the new currency, then drop currency-
+      // dependent queries.
+      void authApi.me().then(updateUser).catch(() => {})
+      void queryClient.invalidateQueries()
     },
     onError: (e: unknown) => {
       const detail =
@@ -238,7 +246,6 @@ export default function WorkspaceSettingsPage() {
   const stats = statsQuery.data ?? { members: 1, accounts: 0, transactions: 0 }
   const isManaged = !!current.managed_by_user_id
   const isManagerSelf = isManaged && current.managed_by_user_id === currentUser?.id
-  const localeForFormat = i18n.language === 'pt-BR' ? 'pt-BR' : 'en-US'
 
   return (
     <div className="container max-w-5xl py-8 space-y-6">
@@ -394,8 +401,16 @@ export default function WorkspaceSettingsPage() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="__none__">—</SelectItem>
+                  <SelectItem value="ru">Русский</SelectItem>
+                  <SelectItem value="de">Deutsch</SelectItem>
+                  <SelectItem value="uk">Українська</SelectItem>
                   <SelectItem value="en">English</SelectItem>
                   <SelectItem value="pt-BR">Português (BR)</SelectItem>
+                  <SelectItem value="pt-PT">Português (PT)</SelectItem>
+                  <SelectItem value="es">Español</SelectItem>
+                  <SelectItem value="pl">Polski</SelectItem>
+                  <SelectItem value="it">Italiano</SelectItem>
+                  <SelectItem value="fr">Français</SelectItem>
                 </SelectContent>
               </Select>
             </div>

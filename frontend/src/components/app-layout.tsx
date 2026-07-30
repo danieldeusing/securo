@@ -2,9 +2,13 @@ import { useState, useCallback, useEffect } from 'react'
 import { getAccountName } from '@/lib/account-utils'
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
+import { useDisplayLocale } from '@/hooks/use-display-locale'
 import { useQuery } from '@tanstack/react-query'
 import { useAuth } from '@/contexts/auth-context'
-import { auth as authApi, backup as backupApi } from '@/lib/api'
+import { useCollectionFilter } from '@/contexts/collection-filter-context'
+import { CollectionSelector } from '@/components/collection-selector'
+import { auth as authApi, backup as backupApi, admin as adminApi } from '@/lib/api'
+import { resolveSupportedLang } from '@/lib/i18n'
 import { toast } from 'sonner'
 import { OnboardingTour } from '@/components/onboarding-tour'
 import { useTheme } from 'next-themes'
@@ -54,15 +58,18 @@ import {
   HardDriveDownload,
   Shield,
   ShieldCheck,
+  Fingerprint,
 } from 'lucide-react'
 import { usePrivacyMode } from '@/hooks/use-privacy-mode'
 import { ChangePasswordDialog } from '@/components/change-password-dialog'
 import { TwoFactorSetup } from '@/components/two-factor-setup'
+import { PasskeyManagementDialog } from '@/components/passkey-management-dialog'
 import { CommandPalette } from '@/components/command-palette'
 import { useCommandPaletteHotkey } from '@/hooks/use-command-palette-hotkey'
 import { GlobalChatPanel } from '@/components/global-chat-panel'
 import { useFeatureFlags } from '@/hooks/use-feature-flags'
 import { Bot, Search, Sparkles } from 'lucide-react'
+import { setThemeBasedOnSystem } from '@/lib/theme-utils'
 
 type NavItem =
   | { type: 'link'; key: string; path: string; icon: React.ElementType }
@@ -97,11 +104,12 @@ function formatCurrency(value: number, currency = 'USD', locale = 'en-US') {
 }
 
 export function AppLayout() {
-  const { t, i18n } = useTranslation()
+  const { t } = useTranslation()
   const { user, logout, updateUser } = useAuth()
+  const { activeAccountIds } = useCollectionFilter()
   const userCurrency = user?.preferences?.currency_display ?? 'USD'
-  const locale = i18n.language === 'en' ? 'en-US' : i18n.language
-  const { theme, setTheme } = useTheme()
+  const locale = useDisplayLocale()
+  const { theme, setTheme, resolvedTheme } = useTheme()
   const location = useLocation()
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [accountsExpanded, setAccountsExpanded] = useState(true)
@@ -109,17 +117,23 @@ export function AppLayout() {
   const { privacyMode, togglePrivacyMode, mask } = usePrivacyMode()
   const [changePasswordOpen, setChangePasswordOpen] = useState(false)
   const [twoFactorOpen, setTwoFactorOpen] = useState(false)
+  const [passkeysOpen, setPasskeysOpen] = useState(false)
   const [backingUp, setBackingUp] = useState(false)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [chatOpen, setChatOpen] = useState(false)
   const [updateDialogOpen, setUpdateDialogOpen] = useState(false)
   useCommandPaletteHotkey(setPaletteOpen)
   const { agentsEnabled, demoMode } = useFeatureFlags()
+
   // ⌘J / Ctrl+J toggles the global slide-over chat from anywhere.
   // Distinct from ⌘K (command palette) so users can have both open.
   // Gated on agentsEnabled so the hotkey is a no-op when the feature is
   // off — keeps ⌘J free for browsers/other tools.
   useEffect(() => {
+    adminApi.defaultColors().then(({ light, dark }) => {
+      setThemeBasedOnSystem(light, dark, resolvedTheme)
+    }).catch(() => {})
+    
     if (!agentsEnabled) return
     const handler = (e: KeyboardEvent) => {
       const isMod = e.metaKey || e.ctrlKey
@@ -130,7 +144,7 @@ export function AppLayout() {
     }
     document.addEventListener('keydown', handler)
     return () => document.removeEventListener('keydown', handler)
-  }, [agentsEnabled])
+  }, [agentsEnabled, resolvedTheme])
   // The "Agents" management page used to live in the sidebar, but it's
   // a configuration surface (KB upload, providers, default selection),
   // not a daily destination. Moved to the user menu (Change password,
@@ -166,9 +180,9 @@ export function AppLayout() {
   }, [user, updateUser])
 
   const userInitial = user?.email?.charAt(0).toUpperCase() ?? '?'
-  const resolvedTheme = theme === 'system' ? undefined : theme
-  const isDark = resolvedTheme
-    ? resolvedTheme === 'dark'
+  const resolvedThemeLocal = theme === 'system' ? undefined : theme
+  const isDark = resolvedThemeLocal
+    ? resolvedThemeLocal === 'dark'
     : typeof window !== 'undefined' &&
       window.matchMedia?.('(prefers-color-scheme: dark)').matches
   const toggleTheme = () => setTheme(isDark ? 'light' : 'dark')
@@ -179,7 +193,12 @@ export function AppLayout() {
   })
 
   const allAccounts = accountsList ?? []
-  const totalBalance = allAccounts.reduce((sum, a) => {
+  // When a collection is active, the sidebar list + total reflect only its
+  // accounts (issue #105). null = all accounts.
+  const visibleAccounts = activeAccountIds
+    ? allAccounts.filter((a) => activeAccountIds.includes(a.id))
+    : allAccounts
+  const totalBalance = visibleAccounts.reduce((sum, a) => {
     return sum + Number(a.balance_primary ?? a.current_balance)
   }, 0)
   const versionA11yLabel = t('app.versionAriaLabel', { version: APP_VERSION })
@@ -258,6 +277,7 @@ export function AppLayout() {
             logout={logout}
             onChangePassword={() => setChangePasswordOpen(true)}
             onTwoFactor={() => setTwoFactorOpen(true)}
+            onPasskeys={() => setPasskeysOpen(true)}
             agentsEnabled={agentsEnabled}
             backingUp={backingUp}
             onBackup={async () => {
@@ -444,7 +464,7 @@ export function AppLayout() {
               </button>
               {accountsExpanded && (
                 <div className="mt-1 space-y-0.5">
-                  {[...allAccounts].sort((a, b) => Math.abs(Number(b.current_balance)) - Math.abs(Number(a.current_balance))).slice(0, accountsShowAll ? allAccounts.length : 3).map((acc) => {
+                  {[...visibleAccounts].sort((a, b) => Math.abs(Number(b.current_balance)) - Math.abs(Number(a.current_balance))).slice(0, accountsShowAll ? visibleAccounts.length : 3).map((acc) => {
                     const balance = Number(acc.current_balance)
                     const prevBalance = acc.previous_balance ?? 0
                     const pctChange = prevBalance !== 0
@@ -467,7 +487,7 @@ export function AppLayout() {
                         </div>
                         <div className="text-right shrink-0 ml-2">
                           <span className={`block tabular-nums font-medium text-xs ${balance < 0 ? 'text-rose-400' : 'text-sidebar-foreground'}`}>
-                            {mask(formatCurrency(balance, acc.currency))}
+                            {mask(formatCurrency(balance, acc.currency, locale))}
                           </span>
                           {pctChange !== null && (
                             <span className={`block text-[10px] tabular-nums font-medium ${pctChange >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
@@ -478,7 +498,7 @@ export function AppLayout() {
                       </Link>
                     )
                   })}
-                  {allAccounts.length > 3 && (
+                  {visibleAccounts.length > 3 && (
                     <button
                       onClick={() => setAccountsShowAll(!accountsShowAll)}
                       className="w-full px-3 py-1.5 text-[11px] font-medium text-sidebar-muted/70 hover:text-sidebar-foreground transition-colors text-center"
@@ -486,8 +506,8 @@ export function AppLayout() {
                       {accountsShowAll
                         ? t('common.showLess', { defaultValue: 'Show less' })
                         : t('common.showMore', {
-                            count: allAccounts.length - 3,
-                            defaultValue: `+${allAccounts.length - 3} more`,
+                            count: visibleAccounts.length - 3,
+                            defaultValue: `+${visibleAccounts.length - 3} more`,
                           })}
                     </button>
                   )}
@@ -509,6 +529,7 @@ export function AppLayout() {
               backingUp={backingUp}
               onChangePassword={() => setChangePasswordOpen(true)}
               onTwoFactor={() => setTwoFactorOpen(true)}
+              onPasskeys={() => setPasskeysOpen(true)}
               onBackup={async () => {
                 setBackingUp(true)
                 try {
@@ -541,6 +562,9 @@ export function AppLayout() {
         {/* Main content */}
         <main className="flex-1 min-h-screen overflow-x-hidden lg:ml-60">
           <div className="p-6 max-w-7xl mx-auto">
+            {/* Active-collection filter (issue #105): sticky bar above the
+                content so the scope is visible right where the data is. */}
+            <CollectionSelector variant="header" />
             <Outlet />
           </div>
         </main>
@@ -554,6 +578,10 @@ export function AppLayout() {
       <TwoFactorSetup
         open={twoFactorOpen}
         onClose={() => setTwoFactorOpen(false)}
+      />
+      <PasskeyManagementDialog
+        open={passkeysOpen}
+        onClose={() => setPasskeysOpen(false)}
       />
       <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} />
       {/* Slide-over global chat — opened from the sidebar pill or via
@@ -573,6 +601,7 @@ function UserMenu({
   logout,
   onChangePassword,
   onTwoFactor,
+  onPasskeys,
   onBackup,
   backingUp,
   dark,
@@ -583,6 +612,7 @@ function UserMenu({
   logout: () => void
   onChangePassword: () => void
   onTwoFactor: () => void
+  onPasskeys: () => void
   onBackup: () => void
   backingUp: boolean
   dark?: boolean
@@ -591,11 +621,11 @@ function UserMenu({
 }) {
   const { t, i18n } = useTranslation()
   const nav = useNavigate()
-  const currentLang = i18n.language
+  const currentLang = resolveSupportedLang(i18n.resolvedLanguage ?? i18n.language)
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="ghost" className="relative h-8 w-8 rounded-full p-0">
+        <Button variant="ghost" className="relative h-8 w-8 rounded-full p-0" aria-label={t('common.userMenu')}>
           <Avatar className="h-8 w-8">
             <AvatarFallback
               className={
@@ -637,6 +667,13 @@ function UserMenu({
           {t('auth.twoFactorTitle')}
         </DropdownMenuItem>
         <DropdownMenuItem
+          onClick={onPasskeys}
+          className="flex items-center gap-2"
+        >
+          <Fingerprint size={14} />
+          {t('auth.passkeysTitle')}
+        </DropdownMenuItem>
+        <DropdownMenuItem
           disabled={backingUp}
           onClick={onBackup}
           className="flex items-center gap-2"
@@ -658,7 +695,7 @@ function UserMenu({
             <Languages size={14} />
             <span className="flex-1">{t('setup.language')}</span>
             <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-              {currentLang === 'pt-BR' ? 'PT' : 'EN'}
+              {currentLang.split('-')[0]}
             </span>
           </DropdownMenuSubTrigger>
           <DropdownMenuPortal>
@@ -667,11 +704,47 @@ function UserMenu({
                 {t('setup.language')}
               </DropdownMenuLabel>
               <DropdownMenuItem
+                onClick={() => i18n.changeLanguage('ru')}
+                className="flex items-center gap-2"
+              >
+                <span className="flex-1">Русский</span>
+                {currentLang === 'ru' && (
+                  <Check size={13} className="text-primary" />
+                )}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => i18n.changeLanguage('de')}
+                className="flex items-center gap-2"
+              >
+                <span className="flex-1">Deutsch</span>
+                {currentLang === 'de' && (
+                  <Check size={13} className="text-primary" />
+                )}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => i18n.changeLanguage('uk')}
+                className="flex items-center gap-2"
+              >
+                <span className="flex-1">Українська</span>
+                {currentLang === 'uk' && (
+                  <Check size={13} className="text-primary" />
+                )}
+              </DropdownMenuItem>
+              <DropdownMenuItem
                 onClick={() => i18n.changeLanguage('pt-BR')}
                 className="flex items-center gap-2"
               >
-                <span className="flex-1">Português</span>
+                <span className="flex-1">Português (BR)</span>
                 {currentLang === 'pt-BR' && (
+                  <Check size={13} className="text-primary" />
+                )}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => i18n.changeLanguage('pt-PT')}
+                className="flex items-center gap-2"
+              >
+                <span className="flex-1">Português (PT)</span>
+                {currentLang === 'pt-PT' && (
                   <Check size={13} className="text-primary" />
                 )}
               </DropdownMenuItem>
@@ -681,6 +754,42 @@ function UserMenu({
               >
                 <span className="flex-1">English</span>
                 {currentLang === 'en' && (
+                  <Check size={13} className="text-primary" />
+                )}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => i18n.changeLanguage('es')}
+                className="flex items-center gap-2"
+              >
+                <span className="flex-1">Español</span>
+                {currentLang === 'es' && (
+                  <Check size={13} className="text-primary" />
+                )}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => i18n.changeLanguage('pl')}
+                className="flex items-center gap-2"
+              >
+                <span className="flex-1">Polski</span>
+                {currentLang === 'pl' && (
+                  <Check size={13} className="text-primary" />
+                )}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => i18n.changeLanguage('it')}
+                className="flex items-center gap-2"
+              >
+                <span className="flex-1">Italiano</span>
+                {currentLang === 'it' && (
+                  <Check size={13} className="text-primary" />
+                )}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => i18n.changeLanguage('fr')}
+                className="flex items-center gap-2"
+              >
+                <span className="flex-1">Français</span>
+                {currentLang === 'fr' && (
                   <Check size={13} className="text-primary" />
                 )}
               </DropdownMenuItem>

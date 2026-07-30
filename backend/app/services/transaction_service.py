@@ -4,7 +4,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import select, func, or_, update
+from sqlalchemy import select, func, or_, not_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -21,6 +21,41 @@ from app.services import split_service
 from app.services.credit_card_service import apply_effective_date
 from app.services.rule_service import apply_rules_to_transaction
 from app.services.fx_rate_service import stamp_primary_amount, convert as fx_convert
+from app.services._query_filters import counts_as_pnl, counts_as_user_pnl, reporting_date_col
+
+
+async def _ensure_category_in_workspace(
+    session: AsyncSession,
+    workspace_id: uuid.UUID,
+    category_id: Optional[uuid.UUID],
+) -> None:
+    if category_id is None:
+        return
+    result = await session.execute(
+        select(Category.id).where(
+            Category.id == category_id,
+            Category.workspace_id == workspace_id,
+        )
+    )
+    if result.scalar_one_or_none() is None:
+        raise ValueError("Category not found")
+
+
+async def _ensure_payee_in_workspace(
+    session: AsyncSession,
+    workspace_id: uuid.UUID,
+    payee_id: Optional[uuid.UUID],
+) -> None:
+    if payee_id is None:
+        return
+    result = await session.execute(
+        select(Payee.id).where(
+            Payee.id == payee_id,
+            Payee.workspace_id == workspace_id,
+        )
+    )
+    if result.scalar_one_or_none() is None:
+        raise ValueError("Payee not found")
 
 
 def _apply_fx_override(transaction, amount, amount_primary=None, fx_rate_used=None):
@@ -81,6 +116,7 @@ async def get_transactions(
     max_amount: Optional[float] = None,
     account_types: Optional[list[str]] = None,
     include_summary: bool = False,
+    user_pnl_only: bool = False,
 ) -> tuple[list[Transaction], int, Optional[dict]]:
     """List transactions for a workspace.
 
@@ -92,11 +128,10 @@ async def get_transactions(
     # line up with the cash-flow view used by the dashboard and reports.
     # When the user has set a manual cycle override (effective_bill_date)
     # we honor it FIRST regardless of accounting mode — that's the whole
-    # point of the override (issue #92, LucasFidelis suggestion).
-    date_col = func.coalesce(
-        Transaction.effective_bill_date,
-        Transaction.effective_date if accounting_mode == "accrual" else Transaction.date,
-    )
+    # point of the override (issue #92, LucasFidelis suggestion). Shared
+    # with the dashboard/report/budget aggregations so a transaction lands
+    # in the same month everywhere (issue #232).
+    date_col = reporting_date_col(accounting_mode)
 
     # Group-scope visibility: when the caller filters by a group they
     # have access to (owner or linked member), bypass the user-owns-it
@@ -214,6 +249,8 @@ async def get_transactions(
         )
     if exclude_transfers:
         base_query = base_query.where(Transaction.transfer_pair_id.is_(None))
+    if user_pnl_only:
+        base_query = base_query.where(Account.is_closed == False, counts_as_user_pnl())
     if txn_type:
         base_query = base_query.where(Transaction.type == txn_type)
     if currency:
@@ -362,14 +399,12 @@ async def get_transactions(
     # rows). Computed before pagination so it covers the whole result set.
     summary: Optional[dict] = None
     if include_summary:
-        ignored_category_ids = select(Category.id).where(Category.is_ignored == True)
-        pnl_subq = base_query.where(
-        Transaction.is_ignored == False,
-        or_(
-            Transaction.category_id.is_(None),
-            Transaction.category_id.not_in(ignored_category_ids),
-        ),
-    ).subquery()
+        # Income / expense / net use the shared `counts_as_pnl()` definition
+        # (issue #242) so the footer matches the dashboard & reports: paired
+        # transfers, `treat_as_transfer` categories (transfers, investments,
+        # custom) and ignored items are kept OUT of income/expense.
+        pnl_filter = counts_as_pnl()
+        pnl_subq = base_query.where(pnl_filter).subquery()
         amount_norm = func.coalesce(
             pnl_subq.c.amount_primary, pnl_subq.c.amount
         )
@@ -386,10 +421,25 @@ async def get_transactions(
                 income = Decimal(str(row_total or 0))
             elif row_type == "debit":
                 expense = Decimal(str(row_total or 0))
+
+        # Excluded: the absolute total of everything filtered out of P/L for
+        # the same rows — the complement of `counts_as_pnl()`. Surfaces
+        # transfer-like movement (e.g. how much was moved/invested) without
+        # distorting income/expense/net.
+        excl_subq = base_query.where(not_(pnl_filter)).subquery()
+        excl_amount_norm = func.coalesce(
+            excl_subq.c.amount_primary, excl_subq.c.amount
+        )
+        excluded_total = await session.scalar(
+            select(func.coalesce(func.sum(func.abs(excl_amount_norm)), 0))
+        )
+        excluded = Decimal(str(excluded_total or 0))
+
         summary = {
             "income": income,
             "expense": expense,
             "net": income - expense,
+            "excluded": excluded,
         }
 
     # Apply ordering (and pagination unless skipped). Bill-view callers
@@ -445,8 +495,6 @@ async def get_transactions(
         for tx in transactions:
             tx.attachment_count = counts.get(tx.id, 0)
             tx.payee_name = tx.payee_entity.name if tx.payee_entity else None
-            if not tx.is_ignored and tx.category and tx.category.is_ignored:
-                tx.is_ignored = True
         # Tag shared rows with the viewer's share + the source group.
         # Owned rows stay as-is. We pre-compute the viewer's linked
         # member ids → group ids once, then look up each transaction's
@@ -635,6 +683,9 @@ async def create_transaction(
     if not account:
         raise ValueError("Account not found")
 
+    await _ensure_category_in_workspace(session, workspace_id, data.category_id)
+    await _ensure_payee_in_workspace(session, workspace_id, data.payee_id)
+
     # Resolve currency: explicit value > account currency
     currency = data.currency or account.currency
 
@@ -651,7 +702,10 @@ async def create_transaction(
         type=data.type,
         source="manual",
         notes=data.notes,
+        effective_bill_date=data.effective_bill_date,
     )
+    if data.effective_bill_date is not None:
+        await _resync_bill_link_from_override(session, transaction, account)
     apply_effective_date(transaction, account)
     session.add(transaction)
     await session.flush()  # get ID without committing
@@ -910,7 +964,6 @@ async def link_existing_as_transfer(
     transfer_pair_id = uuid.uuid4()
     for tx in txns:
         tx.transfer_pair_id = transfer_pair_id
-        tx.category_id = None  # transfers are excluded from category reports
 
     await session.commit()
     for tx in txns:
@@ -989,9 +1042,8 @@ async def create_transfer_counterpart(
     apply_effective_date(counterpart_tx, to_account)
     session.add(counterpart_tx)
 
-    # Link the anchor into the pair; transfers are excluded from category reports.
+    # Link the anchor into the pair; reports exclude transfer_pair_id.
     anchor.transfer_pair_id = transfer_pair_id
-    anchor.category_id = None
 
     await session.flush()
     await stamp_primary_amount(session, user_id, counterpart_tx)
@@ -1108,10 +1160,15 @@ async def update_transaction(
             if paired_tx and paired_tx.account_id == new_account_id:
                 raise ValueError("Cannot move transfer to the same account as its paired transaction")
 
+    if "category_id" in update_data:
+        await _ensure_category_in_workspace(session, workspace_id, update_data["category_id"])
+    if "payee_id" in update_data:
+        await _ensure_payee_in_workspace(session, workspace_id, update_data["payee_id"])
+
     # Pop FX override fields before generic setattr loop
+    has_fx_override = "amount_primary" in update_data or "fx_rate_used" in update_data
     override_amount_primary = update_data.pop("amount_primary", None)
     override_fx_rate = update_data.pop("fx_rate_used", None)
-    has_fx_override = override_amount_primary is not None or override_fx_rate is not None
 
     restamp_fields = {"amount", "currency", "date"}
     needs_restamp = bool(restamp_fields & update_data.keys())
@@ -1120,12 +1177,17 @@ async def update_transaction(
         setattr(transaction, key, value)
 
     if has_fx_override:
-        _apply_fx_override(
-            transaction,
-            transaction.amount,
-            override_amount_primary,
-            override_fx_rate,
-        )
+        if override_amount_primary is None and override_fx_rate is None:
+            transaction.amount_primary = None
+            transaction.fx_rate_used = None
+            await stamp_primary_amount(session, user_id, transaction)
+        else:
+            _apply_fx_override(
+                transaction,
+                transaction.amount,
+                override_amount_primary,
+                override_fx_rate,
+            )
     elif needs_restamp:
         await stamp_primary_amount(session, user_id, transaction)
 
@@ -1173,7 +1235,7 @@ async def update_transaction(
         await split_service.replace_splits(session, transaction, splits_payload, user_id)
 
     await session.commit()
-    await session.refresh(transaction, ["splits"])
+    await session.refresh(transaction, ["category", "payee_entity", "splits"])
     return transaction
 
 
@@ -1183,6 +1245,7 @@ async def bulk_update_category(
     transaction_ids: list[uuid.UUID],
     category_id: Optional[uuid.UUID] = None,
 ) -> int:
+    await _ensure_category_in_workspace(session, workspace_id, category_id)
     result = await session.execute(
         update(Transaction)
         .where(
@@ -1322,6 +1385,7 @@ async def bulk_add_to_group(
     group_result = await session.execute(
         select(Group).where(
             Group.id == group_id,
+            Group.workspace_id == workspace_id,
             or_(Group.user_id == user_id, Group.id.in_(linked_group_ids)),
         )
     )
@@ -1393,6 +1457,26 @@ async def toggle_ignore_transaction(
     if not transaction:
         return None
     transaction.is_ignored = not transaction.is_ignored
+    await session.commit()
+    await session.refresh(transaction)
+    return transaction
+
+
+async def unlink_recurring_transaction(
+    session: AsyncSession,
+    transaction_id: uuid.UUID,
+    workspace_id: uuid.UUID,
+) -> Optional[Transaction]:
+    """Clear a transaction's link to a recurring bill (issue #116).
+
+    The escape hatch for a wrong auto-link: only the FK is cleared, the
+    transaction row is otherwise untouched, and the bill is left as-is (its
+    next_occurrence already moved on). Returns the transaction, or None if not
+    found / not currently linked."""
+    transaction = await get_transaction(session, transaction_id, workspace_id)
+    if not transaction or transaction.recurring_transaction_id is None:
+        return None
+    transaction.recurring_transaction_id = None
     await session.commit()
     await session.refresh(transaction)
     return transaction

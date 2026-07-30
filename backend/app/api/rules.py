@@ -1,6 +1,7 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_async_session
@@ -9,11 +10,49 @@ from app.core.workspace_context import (
     current_workspace,
     current_writable_workspace,
 )
-from app.schemas.rule import RuleCreate, RuleRead, RuleUpdate
+from app.schemas.rule import (
+    RuleCreate,
+    RuleCreateResponse,
+    RuleImportRequest,
+    RuleImportResponse,
+    RuleMutationResponse,
+    RuleRead,
+    RuleUpdate,
+)
 from app.services import rule_service
 from app.services.rule_service import DuplicateRuleError
 
 router = APIRouter(prefix="/api/rules", tags=["rules"])
+
+
+def _normalize_conditions(conditions: list[dict]) -> list[dict]:
+    return [
+        {
+            "field": condition.get("field"),
+            "op": condition.get("op"),
+            "value": condition.get("value"),
+        }
+        for condition in conditions
+    ]
+
+
+def _rule_match_definition_changed(rule: RuleRead, data: RuleUpdate) -> bool:
+    update_data = data.model_dump(exclude_unset=True)
+    if update_data.get("is_active") is True and not rule.is_active:
+        return True
+    if (
+        "conditions_op" in update_data
+        and update_data["conditions_op"] != rule.conditions_op
+    ):
+        return True
+    if "conditions" in update_data:
+        if _normalize_conditions(update_data["conditions"] or []) != _normalize_conditions(
+            rule.conditions or []
+        ):
+            return True
+    if "actions" in update_data:
+        return [a.model_dump() for a in data.actions or []] != (rule.actions or [])
+    return False
 
 
 @router.get("", response_model=list[RuleRead])
@@ -24,28 +63,90 @@ async def list_rules(
     return await rule_service.get_rules(session, ctx.workspace.id)
 
 
-@router.post("", response_model=RuleRead, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=RuleCreateResponse, status_code=status.HTTP_201_CREATED)
 async def create_rule(
     data: RuleCreate,
     ctx: WorkspaceContext = Depends(current_writable_workspace),
     session: AsyncSession = Depends(get_async_session),
 ):
     try:
-        return await rule_service.create_rule(session, ctx.workspace.id, ctx.user_id, data)
+        rule = await rule_service.create_rule(session, ctx.workspace.id, ctx.user_id, data)
     except DuplicateRuleError:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="A rule with this name already exists",
         )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    # Apply the new rule to existing transactions so it takes effect on history
+    # immediately, and report how many were touched for a transparent toast.
+    applied_count = (
+        await rule_service.apply_single_rule(
+            session,
+            ctx.workspace.id,
+            rule,
+            overwrite_existing_categories=data.overwrite_existing_categories,
+        )
+        if data.apply_to_existing
+        else 0
+    )
+    response = RuleCreateResponse.model_validate(rule)
+    response.applied_count = applied_count
+    return response
 
 
-@router.patch("/{rule_id}", response_model=RuleRead)
+@router.get("/export")
+async def export_rules(
+    ctx: WorkspaceContext = Depends(current_workspace),
+    session: AsyncSession = Depends(get_async_session),
+):
+    payload = await rule_service.export_rules(session, ctx.workspace.id)
+    return JSONResponse(
+        content=payload.model_dump(mode="json"),
+        headers={
+            "Content-Disposition": 'attachment; filename="securo-categorization-rules.json"',
+        },
+    )
+
+
+@router.post("/import", response_model=RuleImportResponse)
+async def import_rules(
+    data: RuleImportRequest,
+    ctx: WorkspaceContext = Depends(current_writable_workspace),
+    session: AsyncSession = Depends(get_async_session),
+):
+    try:
+        return await rule_service.import_rules(
+            session,
+            ctx.workspace.id,
+            ctx.user_id,
+            data.payload,
+            overwrite=data.overwrite,
+        )
+    except DuplicateRuleError:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Import would overwrite existing rules. Confirm overwrite to continue.",
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.patch("/{rule_id}", response_model=RuleMutationResponse)
 async def update_rule(
     rule_id: uuid.UUID,
     data: RuleUpdate,
     ctx: WorkspaceContext = Depends(current_writable_workspace),
     session: AsyncSession = Depends(get_async_session),
 ):
+    current_rule = await rule_service.get_rule(session, rule_id, ctx.workspace.id)
+    if not current_rule:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Rule not found")
+    if data.apply_to_existing is None:
+        should_apply = _rule_match_definition_changed(current_rule, data)
+    else:
+        should_apply = data.apply_to_existing
+
     try:
         rule = await rule_service.update_rule(session, rule_id, ctx.workspace.id, data)
     except DuplicateRuleError:
@@ -53,9 +154,23 @@ async def update_rule(
             status_code=status.HTTP_409_CONFLICT,
             detail="A rule with this name already exists",
         )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     if not rule:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Rule not found")
-    return rule
+    applied_count = (
+        await rule_service.apply_single_rule(
+            session,
+            ctx.workspace.id,
+            rule,
+            overwrite_existing_categories=data.overwrite_existing_categories,
+        )
+        if should_apply
+        else 0
+    )
+    response = RuleMutationResponse.model_validate(rule)
+    response.applied_count = applied_count
+    return response
 
 
 @router.delete("/{rule_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -75,7 +190,9 @@ async def list_rule_packs(
     session: AsyncSession = Depends(get_async_session),
 ):
     """List available country-specific rule packs with installed status."""
-    installed_map = await rule_service.get_installed_packs(session, ctx.user_id)
+    installed_map = await rule_service.get_installed_packs(
+        session, ctx.workspace.id, ctx.user_id
+    )
     packs = []
     for code, pack in rule_service.RULE_PACKS.items():
         packs.append({
@@ -105,6 +222,7 @@ async def install_rule_pack(
     lang = (ctx.user.preferences or {}).get("language", "pt-BR")
     result = await rule_service.install_rule_pack(
         session,
+        ctx.workspace.id,
         ctx.user_id,
         pack_code,
         lang,

@@ -11,13 +11,21 @@ from app.models.asset_value import AssetValue
 from app.models.bank_connection import BankConnection
 from app.models.transaction import Transaction
 from app.models.user import User
-from app.schemas.report import CategoryTrendItem, ReportDataPoint, ReportResponse
+from app.schemas.report import (
+    CategoryTrendItem,
+    ReportDataPoint,
+    ReportMeta,
+    ReportResponse,
+    ReportSummary,
+)
+from app.services import report_service
 from app.services.report_service import (
     _add_months,
     _asset_value_at,
     _date_points,
     _format_date_label,
     _net_worth_at,
+    _report_start_date,
     get_cash_flow_report,
     get_net_worth_report,
 )
@@ -156,6 +164,29 @@ def test_date_points_last_point_replaces_same_period():
     ]
     labels = [_format_date_label(p, "monthly") for p in points]
     assert len(labels) == len(set(labels))
+
+
+# ---------------------------------------------------------------------------
+# Pure-function tests: _report_start_date
+# ---------------------------------------------------------------------------
+
+
+def test_report_start_date_month_range_aligns_to_month_start():
+    assert _report_start_date(date(2025, 6, 15), 6) == date(2024, 12, 1)
+
+
+def test_report_start_date_ytd_uses_current_year_start():
+    assert _report_start_date(date(2025, 6, 15), 24, period="ytd") == date(2025, 1, 1)
+
+
+def test_report_start_date_days_window_is_exact_and_inclusive():
+    # 30 days ending today (inclusive), not the month-aligned window months gives.
+    assert _report_start_date(date(2025, 7, 7), 1, days=30) == date(2025, 6, 8)
+    assert _report_start_date(date(2025, 3, 1), 1, days=30) == date(2025, 1, 31)
+
+
+def test_report_start_date_days_overrides_months_and_period():
+    assert _report_start_date(date(2025, 6, 15), 24, period="ytd", days=7) == date(2025, 6, 9)
 
 
 # ---------------------------------------------------------------------------
@@ -320,6 +351,19 @@ async def test_net_worth_report_intervals(session: AsyncSession, test_user, test
         assert len(report.trend) > 0
 
 
+@pytest.mark.asyncio
+async def test_net_worth_report_ytd_starts_at_current_year(
+    session: AsyncSession, test_user, test_workspace
+):
+    """YTD report window starts at Jan 1 while preserving granularity."""
+    report = await get_net_worth_report(
+        session, test_workspace.id, test_user.id, months=24, interval="monthly", period="ytd"
+    )
+
+    assert report.trend[0].date == f"{date.today().year}-01"
+    assert all(point.date.startswith(str(date.today().year)) for point in report.trend)
+
+
 # ---------------------------------------------------------------------------
 # API-level tests: /reports/net-worth
 # ---------------------------------------------------------------------------
@@ -344,12 +388,34 @@ async def test_net_worth_api_endpoint(client, auth_headers, test_transactions):
 
 
 @pytest.mark.asyncio
+async def test_net_worth_api_accepts_ytd_period(client, auth_headers):
+    """GET /reports/net-worth accepts period=ytd."""
+    response = await client.get(
+        "/api/reports/net-worth",
+        params={"period": "ytd", "interval": "monthly"},
+        headers=auth_headers,
+    )
+    assert response.status_code == 200
+    data = response.json()
+
+    assert data["trend"][0]["date"] == f"{date.today().year}-01"
+
+
+@pytest.mark.asyncio
 async def test_net_worth_api_validation(client, auth_headers):
     """GET /reports/net-worth validates query params."""
     # Invalid interval
     resp = await client.get(
         "/api/reports/net-worth",
         params={"interval": "invalid"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 422
+
+    # Invalid period
+    resp = await client.get(
+        "/api/reports/net-worth",
+        params={"period": "rolling"},
         headers=auth_headers,
     )
     assert resp.status_code == 422
@@ -462,6 +528,93 @@ async def test_income_expenses_api_validation(client, auth_headers):
     resp = await client.get(
         "/api/reports/income-expenses",
         params={"months": 25},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 422
+
+    resp = await client.get(
+        "/api/reports/income-expenses",
+        params={"period": "rolling"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_income_expenses_api_accepts_ytd_period(client, auth_headers, monkeypatch):
+    """GET /reports/income-expenses passes period=ytd to service."""
+
+    async def fake_report(session, workspace_id, user_id, months, interval, currency, account_ids=None, period=None, days=None):
+        assert months == 12
+        assert interval == "monthly"
+        assert period == "ytd"
+        assert days is None
+        return ReportResponse(
+            summary=ReportSummary(
+                primary_value=0,
+                change_amount=0,
+                change_percent=None,
+                breakdowns=[],
+            ),
+            trend=[],
+            meta=ReportMeta(
+                type="income_expenses",
+                series_keys=["income", "expenses"],
+                currency=currency,
+                interval=interval,
+            ),
+            composition=[],
+            category_trend=[],
+        )
+
+    monkeypatch.setattr(report_service, "get_income_expenses_report", fake_report)
+
+    resp = await client.get(
+        "/api/reports/income-expenses",
+        params={"period": "ytd", "interval": "monthly"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_income_expenses_api_forwards_days_window(client, auth_headers, monkeypatch):
+    """GET /reports/income-expenses passes the exact day window to the service."""
+    seen: dict = {}
+
+    async def fake_report(session, workspace_id, user_id, months, interval, currency, account_ids=None, period=None, days=None):
+        seen["days"] = days
+        return ReportResponse(
+            summary=ReportSummary(
+                primary_value=0,
+                change_amount=0,
+                change_percent=None,
+                breakdowns=[],
+            ),
+            trend=[],
+            meta=ReportMeta(
+                type="income_expenses",
+                series_keys=["income", "expenses"],
+                currency=currency,
+                interval=interval,
+            ),
+            composition=[],
+            category_trend=[],
+        )
+
+    monkeypatch.setattr(report_service, "get_income_expenses_report", fake_report)
+
+    resp = await client.get(
+        "/api/reports/income-expenses",
+        params={"months": 1, "interval": "monthly", "days": 30},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    assert seen["days"] == 30
+
+    resp = await client.get(
+        "/api/reports/income-expenses",
+        params={"days": 0},
         headers=auth_headers,
     )
     assert resp.status_code == 422
@@ -752,7 +905,20 @@ async def test_net_worth_negative_manual_balance(session: AsyncSession, test_use
     await _add_txn(session, test_user.id, acct.id, 1000, "debit", date.today())
 
     dp = await _net_worth_at(session, test_workspace.id, date.today(), "BRL")
-    assert dp.breakdowns["accounts"] == -1000.0
+    assert dp.breakdowns["accounts"] == 0.0
+    assert dp.breakdowns["liabilities"] == 1000.0
+    assert dp.value == -1000.0
+
+
+@pytest.mark.asyncio
+async def test_net_worth_negative_account_in_composition(session: AsyncSession, test_user, test_workspace: User):
+    acct = await _make_manual_account(session, test_user.id, "Overdrawn Acct")
+    await _add_txn(session, test_user.id, acct.id, 500, "debit", date.today())
+
+    report = await get_net_worth_report(session, test_workspace.id, test_user.id, months=1, interval="monthly")
+    liability_items = [c for c in report.composition if c.group == "liabilities"]
+    labels = [c.label for c in liability_items]
+    assert "Overdrawn Acct" in labels
 
 
 # ---------------------------------------------------------------------------
@@ -801,6 +967,26 @@ async def test_net_worth_composition_uses_display_name(session: AsyncSession, te
 
 
 @pytest.mark.asyncio
+async def test_net_worth_intermediate_trend_points_have_composition(
+    session: AsyncSession, test_user, test_workspace: User
+):
+    """Non-last trend points carry per-item composition, not just the current snapshot."""
+    acct = await _make_manual_account(session, test_user.id, "History Acct")
+    # 135 days back lands before the first monthly cutoff (end of month-4),
+    # so the first trend point carries this account in composition.
+    await _add_txn(session, test_user.id, acct.id, 8000, "credit", date.today() - timedelta(days=135))
+
+    report = await get_net_worth_report(
+        session, test_workspace.id, test_user.id, months=4, interval="monthly"
+    )
+    assert len(report.trend) >= 2
+    # The first trend point predates today and must still have composition populated
+    first = report.trend[0]
+    assert len(first.composition) > 0
+    assert any(c.label == "History Acct" for c in first.composition)
+
+
+@pytest.mark.asyncio
 async def test_net_worth_weekly_interval(session: AsyncSession, test_user, test_workspace: User):
     acct = await _make_manual_account(session, test_user.id, "Weekly Test")
     await _add_txn(session, test_user.id, acct.id, 1000, "credit", date.today())
@@ -825,6 +1011,64 @@ async def test_net_worth_change_percent_zero_previous(session: AsyncSession, tes
     report = await get_net_worth_report(session, test_workspace.id, test_user.id, months=1, interval="monthly")
     if report.summary.primary_value == 0:
         assert report.summary.change_percent is None
+
+
+# ---------------------------------------------------------------------------
+# Trend data point change field
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_trend_change_calculation(session: AsyncSession, test_user, test_workspace: User):
+    """change is None on the first point and equals round(value - prev.value, 2) on all others.
+    Uses activity spread over time so the trend contains positive, negative, and flat changes."""
+    acct = await _make_manual_account(session, test_user.id, "Change Calc")
+    today = date.today()
+    await _add_txn(session, test_user.id, acct.id, 5000, "credit", today - timedelta(days=150))  # opening
+    await _add_txn(session, test_user.id, acct.id, 1200, "credit", today - timedelta(days=90))   # income
+    await _add_txn(session, test_user.id, acct.id, 300,  "debit",  today - timedelta(days=60))   # expense
+    await _add_txn(session, test_user.id, acct.id, 800,  "credit", today - timedelta(days=30))   # income
+    await _add_txn(session, test_user.id, acct.id, 450,  "debit",  today)                        # recent expense
+
+    report = await get_net_worth_report(session, test_workspace.id, test_user.id, months=6, interval="monthly")
+
+    assert len(report.trend) > 1
+    assert report.trend[0].change is None
+    for prev, curr in zip(report.trend, report.trend[1:]):
+        assert curr.change == round(curr.value - prev.value, 2)
+
+
+@pytest.mark.asyncio
+async def test_trend_change_zero_when_net_worth_unchanged(
+    session: AsyncSession, test_user, test_workspace: User
+):
+    """When no activity occurs inside the report window, every non-first point has change == 0."""
+    acct = await _make_manual_account(session, test_user.id, "Change Zero")
+    two_years_ago = date.today() - timedelta(days=730)
+    await _add_txn(session, test_user.id, acct.id, 4000, "credit", two_years_ago)
+
+    report = await get_net_worth_report(session, test_workspace.id, test_user.id, months=3, interval="monthly")
+
+    for dp in report.trend[1:]:
+        assert dp.change == 0.0
+
+
+@pytest.mark.asyncio
+async def test_net_worth_api_trend_points_include_change(client, auth_headers, test_transactions):
+    """GET /reports/net-worth: change is None on the first point and present on all others."""
+    response = await client.get(
+        "/api/reports/net-worth",
+        params={"months": 6, "interval": "monthly"},
+        headers=auth_headers,
+    )
+    assert response.status_code == 200
+    data = response.json()
+
+    trend = data["trend"]
+    assert len(trend) > 1
+    assert trend[0]["change"] is None
+    for point in trend[1:]:
+        assert point["change"] is not None
 
 
 # ---------------------------------------------------------------------------

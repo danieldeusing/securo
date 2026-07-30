@@ -7,10 +7,20 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.account import Account
+from app.models.asset import Asset
 from app.models.bank_connection import BankConnection
 from app.models.category import Category
 from app.models.transaction import Transaction
-from app.providers.base import AccountData, BillData, ConnectionData, ConnectTokenData, TransactionData
+from app.providers.base import (
+    AccountData,
+    BillData,
+    ConnectionData,
+    ConnectTokenData,
+    HoldingData,
+    ProviderUserActionRequired,
+    TransactionData,
+)
 from app.services.connection_service import (
     _description_similarity,
     _match_pluggy_category,
@@ -100,37 +110,41 @@ def test_description_similarity_case_insensitive():
 
 
 @pytest.mark.asyncio
-async def test_match_pluggy_exact(session: AsyncSession, test_user):
-    """Exact Pluggy category match maps to user's category."""
+async def test_match_pluggy_exact(session: AsyncSession, test_user, test_workspace):
+    """Exact Pluggy category match maps to the workspace's category."""
     await _make_category(session, test_user.id, "Alimentação")
-    cat_id = await _match_pluggy_category(session, test_user.id, "Eating out")
+    cat_id = await _match_pluggy_category(session, test_workspace.id, "Eating out")
     assert cat_id is not None
 
 
 @pytest.mark.asyncio
-async def test_match_pluggy_prefix(session: AsyncSession, test_user):
+async def test_match_pluggy_prefix(session: AsyncSession, test_user, test_workspace):
     """Pluggy category with ' - ' prefix matches via split."""
     await _make_category(session, test_user.id, "Transferências")
-    cat_id = await _match_pluggy_category(session, test_user.id, "Transfer - PIX")
+    cat_id = await _match_pluggy_category(session, test_workspace.id, "Transfer - PIX")
     assert cat_id is not None
 
 
 @pytest.mark.asyncio
-async def test_match_pluggy_no_match(session: AsyncSession, test_user):
+async def test_match_pluggy_no_match(session: AsyncSession, test_workspace):
     """Unknown Pluggy category returns None."""
-    cat_id = await _match_pluggy_category(session, test_user.id, "Unknown Category XYZ")
+    cat_id = await _match_pluggy_category(
+        session, test_workspace.id, "Unknown Category XYZ"
+    )
     assert cat_id is None
 
 
 @pytest.mark.asyncio
-async def test_match_pluggy_none(session: AsyncSession, test_user):
+async def test_match_pluggy_none(session: AsyncSession, test_workspace):
     """None category returns None."""
-    cat_id = await _match_pluggy_category(session, test_user.id, None)
+    cat_id = await _match_pluggy_category(session, test_workspace.id, None)
     assert cat_id is None
 
 
 @pytest.mark.asyncio
-async def test_match_pluggy_disabled_short_circuits(session: AsyncSession, test_user):
+async def test_match_pluggy_disabled_short_circuits(
+    session: AsyncSession, test_user, test_workspace
+):
     """When the global use_provider_categories flag is off, the matcher returns
     None even on inputs that would otherwise resolve. This is the contract
     sync_connection / handle_oauth_callback rely on to leave transactions
@@ -138,22 +152,22 @@ async def test_match_pluggy_disabled_short_circuits(session: AsyncSession, test_
     await _make_category(session, test_user.id, "Alimentação")
     # Sanity: enabled=True still matches.
     enabled_match = await _match_pluggy_category(
-        session, test_user.id, "Eating out", enabled=True
+        session, test_workspace.id, "Eating out", enabled=True
     )
     assert enabled_match is not None
 
     # enabled=False short-circuits before any DB lookup.
     disabled_match = await _match_pluggy_category(
-        session, test_user.id, "Eating out", enabled=False
+        session, test_workspace.id, "Eating out", enabled=False
     )
     assert disabled_match is None
 
 
 @pytest.mark.asyncio
-async def test_match_pluggy_user_has_no_category(session: AsyncSession, test_user):
-    """Pluggy category maps but user doesn't have the target category."""
+async def test_match_pluggy_user_has_no_category(session: AsyncSession, test_workspace):
+    """Pluggy category maps but the workspace doesn't have the target category."""
     # "Eating out" maps to "Alimentação" but we don't create it
-    cat_id = await _match_pluggy_category(session, test_user.id, "Eating out")
+    cat_id = await _match_pluggy_category(session, test_workspace.id, "Eating out")
     assert cat_id is None
 
 
@@ -238,6 +252,181 @@ async def test_update_settings_preserves_existing(session: AsyncSession, test_us
     assert updated is not None
     assert updated.settings["payee_source"] == "auto"
     assert updated.settings["import_pending"] is False
+
+
+@pytest.mark.asyncio
+async def test_update_settings_sync_assets(session: AsyncSession, test_user, test_workspace):
+    """Per-connection asset sync can be disabled without clobbering other settings."""
+    conn = await _make_connection(
+        session, test_user.id, "Asset Settings Test",
+        settings={"payee_source": "auto", "import_pending": True},
+    )
+
+    updated = await update_connection_settings(
+        session, conn.id, test_workspace.id, {"sync_assets": False},
+    )
+    assert updated is not None
+    assert updated.settings["payee_source"] == "auto"
+    assert updated.settings["import_pending"] is True
+    assert updated.settings["sync_assets"] is False
+
+
+@pytest.mark.asyncio
+async def test_oauth_callback_respects_initial_asset_sync_opt_out(
+    session: AsyncSession, test_user, test_workspace
+):
+    """Initial connection creation can opt out before holdings are imported."""
+    mock_provider = AsyncMock()
+    mock_provider.handle_oauth_callback = AsyncMock(return_value=ConnectionData(
+        external_id="ext-no-assets",
+        institution_name="No Assets Bank",
+        credentials={"token": "x"},
+        accounts=[],
+    ))
+    mock_provider.get_holdings = AsyncMock(return_value=[
+        HoldingData(
+            external_id="holding-1", name="Provider Fund",
+            currency="BRL", current_value=Decimal("1234.56"),
+        ),
+    ])
+
+    with patch("app.services.connection_service.get_provider", return_value=mock_provider), \
+         patch("app.services.connection_service.detect_transfer_pairs", new_callable=AsyncMock):
+        connection = await handle_oauth_callback(
+            session,
+            test_workspace.id,
+            test_user.id,
+            "code",
+            "pluggy",
+            sync_assets=False,
+        )
+
+    assert connection.settings["sync_assets"] is False
+    mock_provider.get_holdings.assert_not_awaited()
+    assets = (await session.execute(select(Asset))).scalars().all()
+    assert assets == []
+
+
+@pytest.mark.asyncio
+async def test_oauth_callback_respects_state_asset_sync_opt_out(
+    session: AsyncSession, test_user, test_workspace
+):
+    """Redirect OAuth stores the initial opt-out in state before the callback."""
+    mock_provider = AsyncMock()
+    mock_provider.handle_oauth_callback = AsyncMock(return_value=ConnectionData(
+        external_id="ext-oauth-no-assets",
+        institution_name="OAuth No Assets Bank",
+        credentials={"token": "x"},
+        accounts=[],
+    ))
+    mock_provider.get_holdings = AsyncMock(return_value=[
+        HoldingData(
+            external_id="holding-1", name="Provider Fund",
+            currency="BRL", current_value=Decimal("1234.56"),
+        ),
+    ])
+
+    with patch("app.services.connection_service.get_provider", return_value=mock_provider), \
+         patch("app.services.connection_service.oauth_state.consume_state", new_callable=AsyncMock, return_value={
+             "user_id": str(test_user.id),
+             "workspace_id": str(test_workspace.id),
+             "provider": "test",
+             "flow_params": {
+                 "country": "BR",
+                 "institution_name": "OAuth No Assets Bank",
+                 "sync_assets": False,
+             },
+         }), \
+         patch("app.services.connection_service.detect_transfer_pairs", new_callable=AsyncMock):
+        connection = await handle_oauth_callback(
+            session,
+            test_workspace.id,
+            test_user.id,
+            "code",
+            state="stored-state",
+        )
+
+    assert connection.settings["sync_assets"] is False
+    assert connection.settings["flow_params"] == {
+        "country": "BR",
+        "institution_name": "OAuth No Assets Bank",
+    }
+    mock_provider.get_holdings.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_token_reconnect_updates_existing_connection_without_deleting_accounts(
+    session: AsyncSession, test_user, test_workspace
+):
+    """SimpleFIN token reconnect refreshes credentials in place."""
+    existing = await _make_connection(session, test_user.id, "Old SimpleFIN")
+    existing.provider = "simplefin"
+    existing.external_id = "old-simplefin-conn"
+    existing.credentials = {"access_url_enc": "old-encrypted-url"}
+    existing.status = "error"
+    existing.last_sync_at = datetime.now(timezone.utc)
+    account = Account(
+        id=uuid.uuid4(),
+        user_id=test_user.id,
+        connection_id=existing.id,
+        external_id="existing-account",
+        name="Checking",
+        type="checking",
+        balance=Decimal("10.00"),
+        currency="USD",
+    )
+    session.add(account)
+    await session.commit()
+
+    mock_provider = AsyncMock()
+    mock_provider.handle_oauth_callback = AsyncMock(return_value=ConnectionData(
+        external_id="new-simplefin-conn",
+        institution_name="New SimpleFIN Bank",
+        credentials={"access_url_enc": "new-encrypted-url"},
+        accounts=[],
+    ))
+
+    with patch("app.services.connection_service.get_provider", return_value=mock_provider):
+        reconnected = await handle_oauth_callback(
+            session,
+            test_workspace.id,
+            test_user.id,
+            "fresh-setup-token",
+            provider_name="simplefin",
+            reconnect_connection_id=existing.id,
+        )
+
+    assert reconnected.id == existing.id
+    assert reconnected.external_id == "new-simplefin-conn"
+    assert reconnected.institution_name == "New SimpleFIN Bank"
+    assert reconnected.credentials == {"access_url_enc": "new-encrypted-url"}
+    assert reconnected.status == "active"
+    assert reconnected.last_sync_at is None
+    remaining_accounts = (
+        await session.execute(select(Account).where(Account.connection_id == existing.id))
+    ).scalars().all()
+    assert [a.external_id for a in remaining_accounts] == ["existing-account"]
+    mock_provider.handle_oauth_callback.assert_awaited_once_with("fresh-setup-token")
+
+
+@pytest.mark.asyncio
+async def test_token_reconnect_rejects_provider_mismatch(
+    session: AsyncSession, test_user, test_workspace
+):
+    existing = await _make_connection(session, test_user.id, "SimpleFIN")
+    existing.provider = "simplefin"
+    existing.status = "error"
+    await session.commit()
+
+    with pytest.raises(ValueError, match="provider does not match"):
+        await handle_oauth_callback(
+            session,
+            test_workspace.id,
+            test_user.id,
+            "fresh-setup-token",
+            provider_name="pluggy",
+            reconnect_connection_id=existing.id,
+        )
 
 
 @pytest.mark.asyncio
@@ -518,6 +707,72 @@ async def test_sync_connection_new_transactions(session: AsyncSession, test_user
 
 
 @pytest.mark.asyncio
+async def test_sync_connection_tolerates_duplicate_transaction_rows(
+    session: AsyncSession, test_user, test_workspace
+):
+    """A pre-existing (account_id, external_id) duplicate — the state an earlier
+    concurrent-sync race leaves behind — must not abort the sync. Regression for
+    the MultipleResultsFound crash at the transaction dedup lookup.
+    """
+    conn = await _make_connection(session, test_user.id, "Dup Bank")
+
+    account = Account(
+        id=uuid.uuid4(), user_id=test_user.id, connection_id=conn.id,
+        external_id="dup-acc-1", name="Checking", type="checking",
+        balance=Decimal("500"), currency="BRL",
+    )
+    session.add(account)
+    await session.flush()
+    account_id = account.id  # capture before sync commits/expires the ORM object
+
+    # Two rows sharing (account_id, external_id): exactly what a sync race
+    # leaves behind, and what scalar_one_or_none() used to choke on.
+    for _ in range(2):
+        session.add(Transaction(
+            id=uuid.uuid4(), user_id=test_user.id, account_id=account_id,
+            external_id="dup-tx-1", description="SPOTIFY", amount=Decimal("23.90"),
+            date=date.today(), type="debit", status="pending", source="sync",
+            created_at=datetime.now(timezone.utc),
+        ))
+    await session.commit()
+
+    mock_provider = AsyncMock()
+    mock_provider.refresh_credentials = AsyncMock(return_value={"token": "t"})
+    mock_provider.get_accounts = AsyncMock(return_value=[
+        AccountData(
+            external_id="dup-acc-1", name="Checking",
+            type="checking", balance=Decimal("500"), currency="BRL",
+        ),
+    ])
+    mock_provider.get_transactions = AsyncMock(return_value=[
+        TransactionData(
+            external_id="dup-tx-1", description="SPOTIFY",
+            amount=Decimal("23.90"), date=date.today(), type="debit",
+            currency="BRL", status="posted",
+        ),
+    ])
+
+    with patch("app.services.connection_service.get_provider", return_value=mock_provider), \
+         patch("app.services.connection_service.detect_transfer_pairs", new_callable=AsyncMock), \
+         patch("app.services.connection_service.stamp_primary_amount", new_callable=AsyncMock), \
+         patch("app.services.connection_service._cleanup_phantom_duplicates", new_callable=AsyncMock), \
+         patch("app.services.connection_service.apply_rules_to_transaction", new_callable=AsyncMock):
+        result_conn, _ = await sync_connection(session, conn.id, test_workspace.id, test_user.id)
+
+    assert result_conn.status == "active"
+    # Sync reconciled onto an existing row instead of inserting a third, and did
+    # not raise. The incoming "posted" status is applied to one of the twins.
+    rows = (await session.execute(
+        select(Transaction).where(
+            Transaction.account_id == account_id,
+            Transaction.external_id == "dup-tx-1",
+        )
+    )).scalars().all()
+    assert len(rows) == 2
+    assert any(r.status == "posted" for r in rows)
+
+
+@pytest.mark.asyncio
 async def test_sync_connection_not_found(session: AsyncSession, test_user, test_workspace):
     with pytest.raises(ValueError, match="not found"):
         await sync_connection(session, uuid.uuid4(), test_workspace.id, test_user.id)
@@ -564,6 +819,29 @@ async def test_sync_connection_error_raises(session: AsyncSession, test_user, te
 
 
 @pytest.mark.asyncio
+async def test_sync_connection_user_action_marks_error(
+    session: AsyncSession, test_user, test_workspace
+):
+    conn = await _make_connection(session, test_user.id, "SimpleFIN Auth Error")
+    mock_provider = AsyncMock()
+    mock_provider.refresh_credentials = AsyncMock(return_value={"access_url_enc": "stale"})
+    mock_provider.get_accounts = AsyncMock(
+        side_effect=ProviderUserActionRequired(
+            "SimpleFIN refused the request (403)",
+            code="credentials_invalid",
+            help_url="https://bridge.simplefin.org/",
+        )
+    )
+
+    with patch("app.services.connection_service.get_provider", return_value=mock_provider):
+        with pytest.raises(ProviderUserActionRequired):
+            await sync_connection(session, conn.id, test_workspace.id, test_user.id)
+
+    refreshed = await session.get(BankConnection, conn.id)
+    assert refreshed.status == "error"
+
+
+@pytest.mark.asyncio
 async def test_sync_connection_skips_pending(session: AsyncSession, test_user, test_workspace):
     conn = await _make_connection(
         session, test_user.id, "Pending Bank",
@@ -597,6 +875,80 @@ async def test_sync_connection_skips_pending(session: AsyncSession, test_user, t
         result_conn, _ = await sync_connection(session, conn.id, test_workspace.id, test_user.id)
 
     assert result_conn.status == "active"
+
+
+@pytest.mark.asyncio
+async def test_sync_connection_skips_holdings_when_asset_sync_disabled(
+    session: AsyncSession, test_user, test_workspace
+):
+    """sync_assets=False keeps account/transaction sync active but never fetches holdings."""
+    conn = await _make_connection(
+        session, test_user.id, "No Assets Bank",
+        settings={"sync_assets": False},
+    )
+    mock_provider = AsyncMock()
+    mock_provider.refresh_credentials = AsyncMock(return_value={"token": "t"})
+    mock_provider.get_institution_logo = AsyncMock(return_value=None)
+    mock_provider.get_accounts = AsyncMock(return_value=[
+        AccountData(
+            external_id="no-assets-acc-1", name="Checking",
+            type="checking", balance=Decimal("100"), currency="BRL",
+        ),
+    ])
+    mock_provider.get_transactions = AsyncMock(return_value=[])
+    mock_provider.get_holdings = AsyncMock(return_value=[
+        HoldingData(
+            external_id="holding-1", name="Provider Fund",
+            currency="BRL", current_value=Decimal("1234.56"),
+        ),
+    ])
+
+    with patch("app.services.connection_service.get_provider", return_value=mock_provider), \
+         patch("app.services.connection_service.detect_transfer_pairs", new_callable=AsyncMock), \
+         patch("app.services.connection_service.stamp_primary_amount", new_callable=AsyncMock), \
+         patch("app.services.connection_service.apply_rules_to_transaction", new_callable=AsyncMock):
+        result_conn, _ = await sync_connection(session, conn.id, test_workspace.id, test_user.id)
+
+    assert result_conn.status == "active"
+    mock_provider.get_holdings.assert_not_awaited()
+    assets = (await session.execute(select(Asset))).scalars().all()
+    assert assets == []
+
+
+@pytest.mark.asyncio
+async def test_sync_connection_imports_holdings_by_default(
+    session: AsyncSession, test_user, test_workspace
+):
+    """Missing sync_assets setting preserves legacy asset-sync behavior."""
+    conn = await _make_connection(session, test_user.id, "Assets Bank")
+    mock_provider = AsyncMock()
+    mock_provider.refresh_credentials = AsyncMock(return_value={"token": "t"})
+    mock_provider.get_institution_logo = AsyncMock(return_value=None)
+    mock_provider.get_accounts = AsyncMock(return_value=[
+        AccountData(
+            external_id="assets-acc-1", name="Checking",
+            type="checking", balance=Decimal("100"), currency="BRL",
+        ),
+    ])
+    mock_provider.get_transactions = AsyncMock(return_value=[])
+    mock_provider.get_holdings = AsyncMock(return_value=[
+        HoldingData(
+            external_id="holding-1", name="Provider Fund",
+            currency="BRL", current_value=Decimal("1234.56"),
+        ),
+    ])
+
+    with patch("app.services.connection_service.get_provider", return_value=mock_provider), \
+         patch("app.services.connection_service.detect_transfer_pairs", new_callable=AsyncMock), \
+         patch("app.services.connection_service.stamp_primary_amount", new_callable=AsyncMock), \
+         patch("app.services.connection_service.apply_rules_to_transaction", new_callable=AsyncMock):
+        result_conn, _ = await sync_connection(session, conn.id, test_workspace.id, test_user.id)
+
+    assert result_conn.status == "active"
+    mock_provider.get_holdings.assert_awaited_once()
+    asset = (await session.execute(select(Asset).where(Asset.external_id == "holding-1"))).scalar_one()
+    assert asset.name == "Provider Fund"
+    assert asset.connection_id == conn.id
 
 
 @pytest.mark.asyncio
@@ -1975,3 +2327,111 @@ async def test_sync_keeps_genuine_same_day_repeats(
         )
     )).scalars().all()
     assert len(rows) == 2, "identical-description same-day repeats must be kept"
+
+
+# ---------------------------------------------------------------------------
+# SimpleFIN credit-card balance-sign normalization on sync (UPDATE branch)
+# ---------------------------------------------------------------------------
+
+
+async def _make_simplefin_connection(
+    session: AsyncSession, user_id: uuid.UUID, name: str = "SimpleFIN Bank",
+) -> BankConnection:
+    conn = BankConnection(
+        id=uuid.uuid4(), user_id=user_id, provider="simplefin",
+        external_id=f"ext-sf-{uuid.uuid4().hex[:8]}",
+        institution_name=name, credentials={"token": "fake"},
+        status="active", last_sync_at=datetime.now(timezone.utc),
+        created_at=datetime.now(timezone.utc),
+    )
+    session.add(conn)
+    await session.commit()
+    await session.refresh(conn)
+    return conn
+
+
+@pytest.mark.asyncio
+async def test_sync_normalizes_simplefin_card_balance_to_positive_for_debt(
+    session: AsyncSession, test_user, test_workspace,
+):
+    """SimpleFIN reports a card's debt as a NEGATIVE balance under a "checking"
+    label. Once the user has overridden the account type to credit_card, a
+    re-sync must store the balance positive-for-debt (Pluggy/Enable convention)
+    so the downstream negation yields the right sign instead of double-counting.
+    The UPDATE branch keys the normalization off the account's CURRENT type,
+    which carries the user override (sync never rewrites `type`)."""
+    from app.models.account import Account
+
+    conn = await _make_simplefin_connection(session, test_user.id)
+    # Pre-existing account the user already flipped to credit_card. Stored
+    # balance is already positive-for-debt from the prior edit.
+    account = Account(
+        id=uuid.uuid4(), user_id=test_user.id, connection_id=conn.id,
+        external_id="sf-cc-1", name="SimpleFIN Card", type="credit_card",
+        balance=Decimal("500.00"), currency="USD",
+    )
+    session.add(account)
+    await session.commit()
+
+    mock_provider = AsyncMock()
+    mock_provider.refresh_credentials = AsyncMock(return_value={"token": "t"})
+    # SimpleFIN provider parses every account as type="checking" and reports
+    # the raw negative debt balance.
+    mock_provider.get_accounts = AsyncMock(return_value=[
+        AccountData(
+            external_id="sf-cc-1", name="SimpleFIN Card",
+            type="checking", balance=Decimal("-650.00"), currency="USD",
+        ),
+    ])
+    mock_provider.get_transactions = AsyncMock(return_value=[])
+    mock_provider.get_bills = AsyncMock(return_value=[])
+
+    with patch("app.services.connection_service.get_provider", return_value=mock_provider), \
+         patch("app.services.connection_service.detect_transfer_pairs", new_callable=AsyncMock), \
+         patch("app.services.connection_service.stamp_primary_amount", new_callable=AsyncMock), \
+         patch("app.services.connection_service.apply_rules_to_transaction", new_callable=AsyncMock):
+        await sync_connection(session, conn.id, test_workspace.id, test_user.id)
+
+    await session.refresh(account)
+    # Incoming -650 (raw SimpleFIN) → stored +650 (positive-for-debt). The user
+    # override (type=credit_card) is preserved.
+    assert account.type == "credit_card"
+    assert account.balance == Decimal("650.00")
+
+
+@pytest.mark.asyncio
+async def test_sync_leaves_simplefin_checking_balance_unchanged(
+    session: AsyncSession, test_user, test_workspace,
+):
+    """A SimpleFIN non-card account (no override) keeps the provider's balance
+    verbatim — the normalization only applies to credit_card."""
+    from app.models.account import Account
+
+    conn = await _make_simplefin_connection(session, test_user.id, "SF Checking")
+    account = Account(
+        id=uuid.uuid4(), user_id=test_user.id, connection_id=conn.id,
+        external_id="sf-chk-1", name="SimpleFIN Checking", type="checking",
+        balance=Decimal("0.00"), currency="USD",
+    )
+    session.add(account)
+    await session.commit()
+
+    mock_provider = AsyncMock()
+    mock_provider.refresh_credentials = AsyncMock(return_value={"token": "t"})
+    mock_provider.get_accounts = AsyncMock(return_value=[
+        AccountData(
+            external_id="sf-chk-1", name="SimpleFIN Checking",
+            type="checking", balance=Decimal("1234.56"), currency="USD",
+        ),
+    ])
+    mock_provider.get_transactions = AsyncMock(return_value=[])
+    mock_provider.get_bills = AsyncMock(return_value=[])
+
+    with patch("app.services.connection_service.get_provider", return_value=mock_provider), \
+         patch("app.services.connection_service.detect_transfer_pairs", new_callable=AsyncMock), \
+         patch("app.services.connection_service.stamp_primary_amount", new_callable=AsyncMock), \
+         patch("app.services.connection_service.apply_rules_to_transaction", new_callable=AsyncMock):
+        await sync_connection(session, conn.id, test_workspace.id, test_user.id)
+
+    await session.refresh(account)
+    assert account.balance == Decimal("1234.56")

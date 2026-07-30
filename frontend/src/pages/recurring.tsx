@@ -1,8 +1,10 @@
 import React, { useState } from 'react'
 import { getAccountName } from '@/lib/account-utils'
 import { useTranslation } from 'react-i18next'
+import { useDisplayLocale, useDateLocale } from '@/hooks/use-display-locale'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { categories as categoriesApi, categoryGroups as categoryGroupsApi, recurring as recurringApi, accounts as accountsApi, currencies as currenciesApi } from '@/lib/api'
+import { localDateString } from '@/lib/date-utils'
 import { invalidateFinancialQueries } from '@/lib/invalidate-queries'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
@@ -60,8 +62,9 @@ export default function RecurringPage() {
 }
 
 function RecurringTab() {
-  const { t, i18n } = useTranslation()
-  const locale = i18n.language === 'en' ? 'en-US' : i18n.language
+  const { t } = useTranslation()
+  const locale = useDisplayLocale()
+  const dateLocale = useDateLocale()
   const { mask } = usePrivacyMode()
   const { user } = useAuth()
   const { canWrite } = useWorkspace()
@@ -196,7 +199,7 @@ function RecurringTab() {
                     </span>
                   </td>
                   <td className="py-3 text-xs text-muted-foreground tabular-nums hidden md:table-cell">
-                    {new Date(rt.next_occurrence + 'T00:00:00').toLocaleDateString(locale)}
+                    {new Date(rt.next_occurrence + 'T00:00:00').toLocaleDateString(dateLocale)}
                   </td>
                   <td className="py-3 hidden sm:table-cell">
                     <span className={cn(
@@ -214,6 +217,8 @@ function RecurringTab() {
                         <button
                           className="p-1.5 rounded-md text-muted-foreground hover:text-primary hover:bg-primary/5 transition-colors"
                           onClick={() => { setEditing(rt); setDialogOpen(true) }}
+                          aria-label={t('common.edit')}
+                          title={t('common.edit')}
                         >
                           <Pencil size={13} />
                         </button>
@@ -221,6 +226,8 @@ function RecurringTab() {
                           className="p-1.5 rounded-md text-muted-foreground hover:text-rose-500 hover:bg-rose-50 transition-colors"
                           onClick={() => deleteMutation.mutate(rt.id)}
                           disabled={deleteMutation.isPending}
+                          aria-label={t('common.delete')}
+                          title={t('common.delete')}
                         >
                           <Trash2 size={13} />
                         </button>
@@ -294,11 +301,12 @@ function RecurringForm({
   const [type, setType] = useState<'debit' | 'credit'>(recurring?.type ?? 'debit')
   const [frequency, setFrequency] = useState(recurring?.frequency ?? 'monthly')
   const [dayOfMonth, setDayOfMonth] = useState(recurring?.day_of_month?.toString() ?? '')
-  const [startDate, setStartDate] = useState(recurring?.start_date ?? new Date().toISOString().split('T')[0])
+  const [startDate, setStartDate] = useState(recurring?.start_date ?? localDateString())
   const [endDate, setEndDate] = useState(recurring?.end_date ?? '')
   const [categoryId, setCategoryId] = useState(recurring?.category_id ?? '')
   const [accountId, setAccountId] = useState(recurring?.account_id ?? accounts[0]?.id ?? '')
   const [isActive, setIsActive] = useState(recurring?.is_active ?? true)
+  const [autoGenerate, setAutoGenerate] = useState(recurring?.auto_generate ?? true)
 
   const selectClass = 'w-full border border-border rounded-lg px-3 py-2 text-sm bg-card text-foreground focus:outline-none focus:ring-2 focus:ring-primary'
 
@@ -318,6 +326,7 @@ function RecurringForm({
           category_id: categoryId || null,
           account_id: accountId || null,
           is_active: isActive,
+          auto_generate: autoGenerate,
         } as Partial<RecurringTransaction>)
       }}
       className="space-y-4"
@@ -400,6 +409,18 @@ function RecurringForm({
           </select>
         </div>
       </div>
+      <label className="flex items-start gap-2 cursor-pointer">
+        <input
+          type="checkbox"
+          checked={autoGenerate}
+          onChange={(e) => setAutoGenerate(e.target.checked)}
+          className="h-4 w-4 mt-0.5 rounded border-border"
+        />
+        <span className="text-sm text-foreground">
+          {t('recurring.autoGenerate')}
+          <span className="block text-xs text-muted-foreground">{t('recurring.autoGenerateHelp')}</span>
+        </span>
+      </label>
       {recurring && (
         <label className="flex items-center gap-2 cursor-pointer">
           <input

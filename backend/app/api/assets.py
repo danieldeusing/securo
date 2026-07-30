@@ -18,15 +18,19 @@ from app.providers.market_price import (
     get_market_price_provider,
 )
 from app.schemas.asset import (
+    AssetBuyCreate,
     AssetCreate,
     AssetRead,
+    AssetTransactionCreate,
+    AssetTransactionRead,
+    AssetTransactionUpdate,
     AssetUpdate,
     AssetValueCreate,
     AssetValueRead,
     MarketSymbolMatch,
     MarketSymbolQuote,
 )
-from app.services import asset_service
+from app.services import asset_service, asset_transaction_service
 from app.services.fx_rate_service import convert
 
 logger = logging.getLogger(__name__)
@@ -47,7 +51,9 @@ router = APIRouter(prefix="/api/assets", tags=["assets"])
 @router.get("/market/search", response_model=list[MarketSymbolMatch])
 async def market_search(
     q: str = Query(..., min_length=1, max_length=64, description="Ticker or company name"),
-    limit: int = Query(15, ge=1, le=30),
+    # Upper bound is generous so the Tesouro Direto dropdown can list every
+    # open bond (~60 and growing); ticker autocomplete still requests ~15.
+    limit: int = Query(15, ge=1, le=300),
     _: User = Depends(current_active_user),
 ) -> list[MarketSymbolMatch]:
     """Autocomplete ticker symbols for the Add-Asset form.
@@ -91,6 +97,8 @@ async def market_quote(
     return quote
 
 
+
+
 @router.post("/{asset_id}/refresh-price", response_model=AssetRead)
 async def refresh_asset_price(
     asset_id: uuid.UUID,
@@ -118,7 +126,7 @@ async def refresh_asset_price(
     if asset.valuation_method != "market_price":
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Only market-priced assets can be refreshed via this endpoint",
+            detail="Only externally priced assets can be refreshed via this endpoint",
         )
 
     try:
@@ -131,7 +139,7 @@ async def refresh_asset_price(
     if not ok:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Could not refresh quote for {asset.ticker}",
+            detail="Could not refresh price for this asset",
         )
     await session.commit()
 
@@ -184,6 +192,107 @@ async def portfolio_trend(
     session: AsyncSession = Depends(get_async_session),
 ):
     return await asset_service.get_portfolio_trend(session, ctx.workspace.id, ctx.user_id)
+
+
+# ----------------------------------------------------------------------------
+# Transaction ledger (issue #235)
+# ----------------------------------------------------------------------------
+#
+# These specific routes are declared before the `/{asset_id}` catch-all so a
+# path like `/transactions` is never swallowed by the UUID param.
+
+
+@router.get("/transactions", response_model=list[AssetTransactionRead])
+async def list_workspace_transactions(
+    ticker: str | None = Query(None, max_length=32),
+    kind: str | None = Query(None, pattern="^(buy|sell)$"),
+    limit: int = Query(500, ge=1, le=2000),
+    ctx: WorkspaceContext = Depends(current_workspace),
+    session: AsyncSession = Depends(get_async_session),
+):
+    """All buy/sell transactions in the workspace — powers the Transactions tab."""
+    return await asset_transaction_service.list_workspace_transactions(
+        session, ctx.workspace.id, ticker=ticker, kind=kind, limit=limit
+    )
+
+
+@router.post("/buy", response_model=AssetRead, status_code=status.HTTP_201_CREATED)
+async def buy_into_holding(
+    data: AssetBuyCreate,
+    ctx: WorkspaceContext = Depends(current_writable_workspace),
+    session: AsyncSession = Depends(get_async_session),
+):
+    """Record a buy, consolidating onto the existing ticker holding (in the
+    chosen wallet) or creating a new market-priced one."""
+    try:
+        return await asset_transaction_service.buy_into_holding(
+            session, ctx.workspace.id, ctx.user_id, data
+        )
+    except MarketPriceRateLimitedError:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Market data provider is currently rate-limiting. Try again in a minute.",
+        )
+
+
+@router.get("/{asset_id}/transactions", response_model=list[AssetTransactionRead])
+async def list_asset_transactions(
+    asset_id: uuid.UUID,
+    ctx: WorkspaceContext = Depends(current_workspace),
+    session: AsyncSession = Depends(get_async_session),
+):
+    txs = await asset_transaction_service.list_asset_transactions(
+        session, asset_id, ctx.workspace.id
+    )
+    if txs is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Asset not found")
+    return txs
+
+
+@router.post(
+    "/{asset_id}/transactions", response_model=AssetRead, status_code=status.HTTP_201_CREATED
+)
+async def add_asset_transaction(
+    asset_id: uuid.UUID,
+    data: AssetTransactionCreate,
+    ctx: WorkspaceContext = Depends(current_writable_workspace),
+    session: AsyncSession = Depends(get_async_session),
+):
+    asset = await asset_transaction_service.add_transaction(
+        session, asset_id, ctx.workspace.id, data
+    )
+    if asset is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Asset not found")
+    return asset
+
+
+@router.patch("/transactions/{tx_id}", response_model=AssetRead)
+async def update_asset_transaction(
+    tx_id: uuid.UUID,
+    data: AssetTransactionUpdate,
+    ctx: WorkspaceContext = Depends(current_writable_workspace),
+    session: AsyncSession = Depends(get_async_session),
+):
+    asset = await asset_transaction_service.update_transaction(
+        session, tx_id, ctx.workspace.id, data
+    )
+    if asset is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Transaction not found")
+    return asset
+
+
+@router.delete("/transactions/{tx_id}", response_model=AssetRead)
+async def delete_asset_transaction(
+    tx_id: uuid.UUID,
+    ctx: WorkspaceContext = Depends(current_writable_workspace),
+    session: AsyncSession = Depends(get_async_session),
+):
+    asset = await asset_transaction_service.delete_transaction(
+        session, tx_id, ctx.workspace.id
+    )
+    if asset is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Transaction not found")
+    return asset
 
 
 @router.get("/{asset_id}", response_model=AssetRead)

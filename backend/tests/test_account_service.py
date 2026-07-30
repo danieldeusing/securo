@@ -23,6 +23,7 @@ from app.models.recurring_transaction import RecurringTransaction
 from app.models.transaction import Transaction
 from app.schemas.account import AccountCreate, AccountUpdate
 from app.services.account_service import (
+    _simplefin_to_internal_balance,
     create_account,
     close_account,
     delete_account,
@@ -31,6 +32,7 @@ from app.services.account_service import (
     get_account_summary,
     get_accounts,
     reopen_account,
+    serialize_account,
     update_account,
 )
 
@@ -113,6 +115,27 @@ async def test_create_account_with_balance(session: AsyncSession, test_user, tes
     assert opening is not None
     assert opening.amount == Decimal("1000.00")
     assert opening.type == "credit"
+
+
+@pytest.mark.asyncio
+async def test_create_account_with_negative_balance(session: AsyncSession, test_user, test_workspace):
+    """Negative manual opening balance is recorded as a debit."""
+    data = AccountCreate(name="Overdrawn", type="checking", balance=Decimal("-250.00"), currency="BRL")
+    account = await create_account(session, test_workspace.id, test_user.id, data)
+
+    from sqlalchemy import select
+    result = await session.execute(
+        select(Transaction).where(
+            Transaction.account_id == account.id,
+            Transaction.source == "opening_balance",
+        )
+    )
+    opening = result.scalar_one()
+    assert opening.amount == Decimal("250.00")
+    assert opening.type == "debit"
+
+    [serialized] = await get_accounts(session, test_workspace.id)
+    assert serialized["current_balance"] == -250.0
 
 
 @pytest.mark.asyncio
@@ -207,6 +230,26 @@ async def test_update_account_balance_creates_opening(session: AsyncSession, tes
 
 
 @pytest.mark.asyncio
+async def test_update_account_balance_creates_negative_opening(session: AsyncSession, test_user, test_workspace):
+    """Updating a manual account to a negative balance creates a debit opening."""
+    account = await _make_account(session, test_user.id, "No Balance", balance="0.00")
+    data = AccountUpdate(balance=Decimal("-500.00"))
+    updated = await update_account(session, account.id, test_workspace.id, data)
+
+    assert updated is not None
+    from sqlalchemy import select
+    result = await session.execute(
+        select(Transaction).where(
+            Transaction.account_id == account.id,
+            Transaction.source == "opening_balance",
+        )
+    )
+    opening = result.scalar_one()
+    assert opening.amount == Decimal("500.00")
+    assert opening.type == "debit"
+
+
+@pytest.mark.asyncio
 async def test_update_account_balance_updates_existing_opening(session: AsyncSession, test_user, test_workspace):
     """Updating balance when opening_balance exists updates it."""
     data = AccountCreate(name="Update Test", type="checking", balance=Decimal("1000.00"), currency="BRL")
@@ -268,6 +311,28 @@ async def test_update_account_balance_with_date(session: AsyncSession, test_user
 
 
 @pytest.mark.asyncio
+async def test_update_account_balance_date_only_updates_opening(session: AsyncSession, test_user, test_workspace):
+    """Updating only balance_date moves the existing opening transaction."""
+    data = AccountCreate(name="Date Only Test", type="checking", balance=Decimal("1000.00"), currency="BRL")
+    account = await create_account(session, test_workspace.id, test_user.id, data)
+
+    new_date = date(2025, 7, 20)
+    update_data = AccountUpdate(balance_date=new_date)
+    await update_account(session, account.id, test_workspace.id, update_data)
+
+    from sqlalchemy import select
+    result = await session.execute(
+        select(Transaction).where(
+            Transaction.account_id == account.id,
+            Transaction.source == "opening_balance",
+        )
+    )
+    opening = result.scalar_one()
+    assert opening.date == new_date
+    assert opening.amount == Decimal("1000.00")
+
+
+@pytest.mark.asyncio
 async def test_update_bank_connected_raises(session: AsyncSession, test_user, test_workspace, test_connection):
     """Updating a bank-connected account raises ValueError."""
     account = await _make_account(
@@ -277,6 +342,44 @@ async def test_update_bank_connected_raises(session: AsyncSession, test_user, te
     data = AccountUpdate(name="Hacked")
     with pytest.raises(ValueError, match="bank-connected"):
         await update_account(session, account.id, test_workspace.id, data)
+
+
+@pytest.mark.asyncio
+async def test_update_bank_connected_type_override(
+    session: AsyncSession, test_user, test_workspace, test_connection
+):
+    """The account type can be overridden on a bank-connected account (issue #271)."""
+    account = await _make_account(
+        session, test_user.id, "mBank Savings", acc_type="checking",
+        connection_id=test_connection.id, external_id="ext-type",
+    )
+    updated = await update_account(
+        session, account.id, test_workspace.id, AccountUpdate(type="savings")
+    )
+    assert updated is not None
+    assert updated.type == "savings"
+
+
+@pytest.mark.asyncio
+async def test_update_bank_connected_type_override_clears_card_metadata(
+    session: AsyncSession, test_user, test_workspace, test_connection
+):
+    """Overriding a connected card to a non-card type drops stale card metadata."""
+    account = await _make_account(
+        session, test_user.id, "Was a card", acc_type="credit_card",
+        connection_id=test_connection.id, external_id="ext-card",
+    )
+    account.credit_limit = Decimal("5000.00")
+    account.statement_close_day = 10
+    await session.commit()
+
+    updated = await update_account(
+        session, account.id, test_workspace.id, AccountUpdate(type="checking")
+    )
+    assert updated is not None
+    assert updated.type == "checking"
+    assert updated.credit_limit is None
+    assert updated.statement_close_day is None
 
 
 @pytest.mark.asyncio
@@ -731,3 +834,141 @@ async def test_get_account_balance_history_credit_card_negated(
     # CC with connection_id has sign=-1.0: a debit (spending) on CC
     # produces negative balance, negated to positive (showing debt increase)
     assert history[0]["balance"] == pytest.approx(500.0)
+
+
+# ---------------------------------------------------------------------------
+# SimpleFIN credit-card balance-sign normalization
+# ---------------------------------------------------------------------------
+
+
+async def _make_provider_connection(
+    session: AsyncSession, user_id: uuid.UUID, provider: str,
+) -> "uuid.UUID":
+    from datetime import datetime, timezone
+    from app.models.bank_connection import BankConnection
+    conn = BankConnection(
+        id=uuid.uuid4(), user_id=user_id, provider=provider,
+        external_id=f"ext-{provider}-{uuid.uuid4().hex[:8]}",
+        institution_name=f"{provider} bank", credentials={"token": "fake"},
+        status="active", last_sync_at=datetime.now(timezone.utc),
+        created_at=datetime.now(timezone.utc),
+    )
+    session.add(conn)
+    await session.commit()
+    await session.refresh(conn)
+    return conn.id
+
+
+def test_simplefin_to_internal_balance_flips_card():
+    """SimpleFIN reports card debt as a negative number; normalize to positive."""
+    assert _simplefin_to_internal_balance(
+        "simplefin", "credit_card", Decimal("-500.00")
+    ) == Decimal("500.00")
+
+
+def test_simplefin_to_internal_balance_checking_unchanged():
+    """A SimpleFIN non-card balance is already in the right convention."""
+    assert _simplefin_to_internal_balance(
+        "simplefin", "checking", Decimal("1500.00")
+    ) == Decimal("1500.00")
+
+
+def test_simplefin_to_internal_balance_other_provider_unchanged():
+    """Pluggy/Enable already use positive-for-debt — never flip their cards."""
+    assert _simplefin_to_internal_balance(
+        "pluggy", "credit_card", Decimal("500.00")
+    ) == Decimal("500.00")
+    assert _simplefin_to_internal_balance(
+        "enable_banking", "credit_card", Decimal("500.00")
+    ) == Decimal("500.00")
+
+
+@pytest.mark.asyncio
+async def test_update_simplefin_account_to_credit_card_flips_balance(
+    session: AsyncSession, test_user, test_workspace,
+):
+    """Decisive case: a SimpleFIN account stores debt as a negative balance under
+    type="checking". When the user overrides the type to credit_card, the stored
+    balance must flip to positive-for-debt so the downstream negation in
+    serialize_account / dashboard yields -500 (owed) instead of +500 — without
+    the flip the card double-counts in net worth (≈2x the debt)."""
+    conn_id = await _make_provider_connection(session, test_user.id, "simplefin")
+    account = await _make_account(
+        session, test_user.id, "SimpleFIN Card", acc_type="checking",
+        balance="-500.00", connection_id=conn_id, external_id="sf-card-1",
+    )
+
+    updated = await update_account(
+        session, account.id, test_workspace.id, AccountUpdate(type="credit_card")
+    )
+    assert updated is not None
+    assert updated.type == "credit_card"
+    # Stored balance flips to positive-for-debt (matches Pluggy/Enable).
+    assert updated.balance == Decimal("500.00")
+    # Resolved/serialized balance is negative = the user owes 500.
+    payload = serialize_account(updated, None, None)
+    assert payload["current_balance"] == pytest.approx(-500.0)
+
+
+@pytest.mark.asyncio
+async def test_update_simplefin_account_away_from_credit_card_flips_back(
+    session: AsyncSession, test_user, test_workspace,
+):
+    """Reverse direction: moving a SimpleFIN card back to a non-card type must
+    flip the stored balance back to the raw provider sign so it stays
+    consistent with a fresh sync (which writes the raw negative value)."""
+    conn_id = await _make_provider_connection(session, test_user.id, "simplefin")
+    account = await _make_account(
+        session, test_user.id, "SimpleFIN WasCard", acc_type="credit_card",
+        balance="500.00", connection_id=conn_id, external_id="sf-card-2",
+    )
+
+    updated = await update_account(
+        session, account.id, test_workspace.id, AccountUpdate(type="checking")
+    )
+    assert updated is not None
+    assert updated.type == "checking"
+    assert updated.balance == Decimal("-500.00")
+
+
+@pytest.mark.asyncio
+async def test_update_pluggy_account_to_credit_card_does_not_flip(
+    session: AsyncSession, test_user, test_workspace,
+):
+    """No double-count for non-SimpleFIN providers: a Pluggy account already
+    uses positive-for-debt, so a type edit must NOT touch the stored balance."""
+    conn_id = await _make_provider_connection(session, test_user.id, "pluggy")
+    account = await _make_account(
+        session, test_user.id, "Pluggy Card", acc_type="checking",
+        balance="500.00", connection_id=conn_id, external_id="pl-card-1",
+    )
+
+    updated = await update_account(
+        session, account.id, test_workspace.id, AccountUpdate(type="credit_card")
+    )
+    assert updated is not None
+    assert updated.type == "credit_card"
+    # Untouched — Pluggy was already positive-for-debt.
+    assert updated.balance == Decimal("500.00")
+    payload = serialize_account(updated, None, None)
+    assert payload["current_balance"] == pytest.approx(-500.0)
+
+
+@pytest.mark.asyncio
+async def test_update_simplefin_type_change_not_crossing_card_keeps_balance(
+    session: AsyncSession, test_user, test_workspace,
+):
+    """A SimpleFIN type edit that doesn't cross the credit_card boundary (e.g.
+    checking → savings) must leave the stored balance alone."""
+    conn_id = await _make_provider_connection(session, test_user.id, "simplefin")
+    account = await _make_account(
+        session, test_user.id, "SimpleFIN Savings", acc_type="checking",
+        balance="1500.00", connection_id=conn_id, external_id="sf-sav-1",
+    )
+
+    updated = await update_account(
+        session, account.id, test_workspace.id, AccountUpdate(type="savings")
+    )
+    assert updated is not None
+    assert updated.type == "savings"
+    assert updated.balance == Decimal("1500.00")

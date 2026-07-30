@@ -25,10 +25,12 @@ import logging
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, Optional
+from urllib.parse import unquote, urlsplit, urlunsplit
 
 import httpx
 
 from app.agents.services.crypto import decrypt, encrypt
+from app.providers.favicon import favicon_url_for
 from app.providers.base import (
     AccountData,
     BankProvider,
@@ -81,9 +83,33 @@ def _epoch_to_date(value: Any) -> Optional[date]:
     if value is None or value == "":
         return None
     try:
-        return datetime.fromtimestamp(int(value), tz=timezone.utc).date()
+        seconds = int(value)
+        if seconds <= 0:
+            return None
+        return datetime.fromtimestamp(seconds, tz=timezone.utc).date()
     except (ValueError, TypeError, OSError):
         return None
+
+
+def _accounts_url_and_auth(access_url: str) -> tuple[str, Optional[tuple[str, str]]]:
+    parsed = urlsplit(access_url.rstrip("/"))
+    if parsed.username is None:
+        return f"{access_url.rstrip('/')}/accounts", None
+    host = parsed.hostname or ""
+    if parsed.port:
+        host = f"{host}:{parsed.port}"
+    url = urlunsplit((parsed.scheme, host, f"{parsed.path}/accounts", parsed.query, ""))
+    return url, (unquote(parsed.username), unquote(parsed.password or ""))
+
+
+def _redact_userinfo(url: str) -> str:
+    parsed = urlsplit(url)
+    if parsed.username is None:
+        return url
+    host = parsed.hostname or ""
+    if parsed.port:
+        host = f"{host}:{parsed.port}"
+    return urlunsplit((parsed.scheme, f"***:***@{host}", parsed.path, parsed.query, parsed.fragment))
 
 
 def _to_decimal(value: Any) -> Optional[Decimal]:
@@ -93,6 +119,37 @@ def _to_decimal(value: Any) -> Optional[Decimal]:
         return Decimal(str(value))
     except (InvalidOperation, ValueError):
         return None
+
+
+def _iso_currency(value: Any, fallback: Optional[str]) -> Optional[str]:
+    """Normalize a connector-supplied currency, guarding against non-ISO values.
+
+    SimpleFIN's ``currency`` fields are populated by the bank connector, and
+    for crypto/brokerage positions some connectors put the asset's ticker
+    there instead (e.g. ``"DOGE"``) rather than an ISO 4217 code. Every
+    column these land in — ``accounts.currency``, ``transactions.currency``,
+    ``assets.currency`` — is ``VARCHAR(3)``, so anything longer overflows the
+    write and takes down the whole connection's sync (issue #448).
+
+    This is a shape check, not a validity check: a 3-letter ticker like
+    ``BTC`` still passes. It exists to keep an oversized value from ever
+    reaching the DB, so use it at every site that forwards a raw
+    provider currency.
+    """
+    if isinstance(value, str) and len(value) == 3 and value.isalpha():
+        return value.upper()
+    return fallback
+
+
+def _ticker(value: Any) -> Optional[str]:
+    """Normalize a holding's symbol for the ``assets.ticker`` column.
+
+    Truncated to the column's 32 chars so an unexpectedly long symbol can't
+    reproduce the overflow this module already guards against for currency.
+    """
+    if not isinstance(value, str):
+        return None
+    return value.strip().upper()[:32] or None
 
 
 def _surface_errors(errlist: list[dict], context: str) -> None:
@@ -179,8 +236,9 @@ class SimpleFinProvider(BankProvider):
             ).timestamp()))
         if account_id:
             params["account"] = account_id
+        url, auth = _accounts_url_and_auth(access_url)
         async with await self._client(credentials) as client:
-            resp = await client.get(f"{access_url}/accounts", params=params)
+            resp = await client.get(url, params=params, auth=auth)
         if resp.status_code in (401, 403):
             raise ProviderUserActionRequired(
                 f"SimpleFIN refused the request ({resp.status_code})",
@@ -211,8 +269,9 @@ class SimpleFinProvider(BankProvider):
                     claim_url, headers={"Content-Length": "0"}
                 )
             except httpx.HTTPError as exc:
+                message = str(exc).replace(claim_url, _redact_userinfo(claim_url))
                 raise RuntimeError(
-                    f"SimpleFIN claim request failed: {exc}"
+                    f"SimpleFIN claim request failed: {message}"
                 ) from exc
         if claim_resp.status_code == 403:
             # The bridge returns 403 when a setup token is reused.
@@ -247,7 +306,36 @@ class SimpleFinProvider(BankProvider):
             institution_name=institution_name,
             credentials=credentials,
             accounts=accounts,
+            # SimpleFIN has no logo image, but its org metadata carries the
+            # bank's website — derive a favicon from it (same approach as
+            # asset logos).
+            logo_url=favicon_url_for(self._org_website(payload)),
         )
+
+    @staticmethod
+    def _org_website(payload: dict) -> Optional[str]:
+        """Best-effort bank website from a SimpleFIN /accounts payload.
+
+        The Bridge returns the institution on a top-level ``connections``
+        entry as ``org_url`` (e.g. ``"https://beta-bridge.simplefin.org"``),
+        with ``sfin_url`` as a backup. Older/spec-style servers instead attach
+        an ``org`` object (``url``/``domain``) to each account, so we check
+        that too. Returns None when nothing usable is present.
+        """
+        for src in (payload.get("connections") or []):
+            url = src.get("org_url") or src.get("url") or src.get("sfin_url")
+            if url:
+                return url
+        for acc in (payload.get("accounts") or []):
+            org = acc.get("org") or {}
+            url = org.get("url") or org.get("domain") or org.get("sfin-url")
+            if url:
+                return url
+        return None
+
+    async def get_institution_logo(self, credentials: dict) -> Optional[str]:
+        payload = await self._fetch_accounts(credentials, pending=False)
+        return favicon_url_for(self._org_website(payload))
 
     @staticmethod
     def _stable_external_id(payload: dict, fallback: str) -> str:
@@ -281,7 +369,7 @@ class SimpleFinProvider(BankProvider):
         accounts: list[AccountData] = []
         for raw in payload.get("accounts") or []:
             balance = _to_decimal(raw.get("balance")) or Decimal("0")
-            currency = raw.get("currency") or "USD"
+            currency = _iso_currency(raw.get("currency"), "USD")
             account_id = str(raw.get("id") or "")
             if not account_id:
                 continue
@@ -373,7 +461,10 @@ class SimpleFinProvider(BankProvider):
             amount=amount,
             date=txn_date,
             type=txn_type,
-            currency=raw.get("currency"),
+            # None (not a fallback) when the connector sends something that
+            # isn't an ISO code: the sync layer already resolves a null
+            # transaction currency to the account's, then the user's.
+            currency=_iso_currency(raw.get("currency"), None),
             status=status,
             payee=payee,
             raw_data=raw,
@@ -396,7 +487,8 @@ class SimpleFinProvider(BankProvider):
                     HoldingData(
                         external_id=holding_id,
                         name=raw.get("description") or raw.get("symbol") or holding_id,
-                        currency=raw.get("currency") or acc_currency,
+                        currency=_iso_currency(raw.get("currency"), acc_currency),
+                        ticker=_ticker(raw.get("symbol")),
                         current_value=market_value,
                         quantity=_to_decimal(raw.get("shares")),
                         unit_price=_to_decimal(raw.get("market_value")) / _to_decimal(

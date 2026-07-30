@@ -22,12 +22,17 @@ from app.models.user import User
 from app.providers import get_provider
 from app.providers.base import (
     HoldingData,
+    ProviderRateLimited,
     ProviderUserActionRequired,
     SessionExpiredError,
 )
 from app.services import oauth_state
 from app.services import admin_service
-from app.services.account_service import sync_opening_balance_for_connected_account
+from app.services import recurring_match_service
+from app.services.account_service import (
+    _simplefin_to_internal_balance,
+    sync_opening_balance_for_connected_account,
+)
 from app.services.asset_group_service import ensure_group_for_connection
 from app.services.credit_card_service import apply_effective_date
 from app.services.rule_service import apply_rules_to_transaction
@@ -38,6 +43,16 @@ from app.services.payee_service import get_or_create_payee
 logger = logging.getLogger(__name__)
 
 settings = get_settings()
+
+
+def _clean_logo_url(value: object) -> Optional[str]:
+    """Normalize a provider-supplied logo to a non-empty string or None.
+
+    Guards the DB column against anything a provider hands back that isn't a
+    usable URL (None, empty string, or a non-string), so a misbehaving
+    integration can never write junk into ``bank_connections.logo_url``.
+    """
+    return value if isinstance(value, str) and value.strip() else None
 
 PLUGGY_CATEGORY_MAP = {
     "Eating out": "Alimentação",
@@ -63,6 +78,15 @@ PLUGGY_CATEGORY_MAP = {
     "Transfers": "Transferências",
     "Wire transfers": "Transferências",
 }
+
+
+def _sync_assets_enabled(settings: Optional[dict]) -> bool:
+    """Return whether provider investment holdings should sync for a connection.
+
+    Missing settings keep the legacy behavior (enabled). Users can opt out per
+    connection via Connection settings without disabling account/transaction sync.
+    """
+    return (settings or {}).get("sync_assets", True) is not False
 
 
 async def _sync_holdings(
@@ -213,6 +237,7 @@ async def _upsert_asset_from_holding(
             purchase_price=holding.purchase_price,
             purchase_date=holding.purchase_date,
             isin=holding.isin,
+            ticker=holding.ticker,
             maturity_date=holding.maturity_date,
             external_metadata=holding.metadata,
             valuation_method="manual",
@@ -245,6 +270,8 @@ async def _upsert_asset_from_holding(
         asset.purchase_date = holding.purchase_date
     if holding.isin:
         asset.isin = holding.isin
+    if holding.ticker:
+        asset.ticker = holding.ticker
     if holding.maturity_date:
         asset.maturity_date = holding.maturity_date
     return asset
@@ -314,7 +341,7 @@ async def _upsert_asset_value_for_today(
 
 async def _match_pluggy_category(
     session: AsyncSession,
-    user_id: uuid.UUID,
+    workspace_id: uuid.UUID,
     pluggy_category: Optional[str],
     enabled: bool = True,
 ) -> Optional[uuid.UUID]:
@@ -330,10 +357,16 @@ async def _match_pluggy_category(
         app_name = PLUGGY_CATEGORY_MAP.get(pluggy_category.split(" - ")[0])
     if not app_name:
         return None
+    # Scope to the connection's workspace: a user in multiple workspaces owns
+    # the same default category names in each, so a user_id-only lookup returns
+    # several rows. `.first()` is belt-and-suspenders — a category match must
+    # never crash the whole sync even if a workspace somehow has name dupes.
     result = await session.execute(
-        select(Category.id).where(Category.user_id == user_id, Category.name == app_name)
+        select(Category.id)
+        .where(Category.workspace_id == workspace_id, Category.name == app_name)
+        .limit(1)
     )
-    return result.scalar_one_or_none()
+    return result.scalars().first()
 
 
 async def get_connections(session: AsyncSession, workspace_id: uuid.UUID) -> list[BankConnection]:
@@ -470,6 +503,8 @@ async def handle_oauth_callback(
     code: str,
     provider_name: Optional[str] = None,
     state: Optional[str] = None,
+    sync_assets: Optional[bool] = None,
+    reconnect_connection_id: Optional[uuid.UUID] = None,
 ) -> BankConnection:
     state_payload: dict = {}
     if state:
@@ -483,28 +518,46 @@ async def handle_oauth_callback(
             raise ValueError("OAuth state workspace does not match active workspace")
         state_payload = consumed
         provider_name = consumed.get("provider") or provider_name
+    reconnect_id = state_payload.get("reconnect_connection_id") or reconnect_connection_id
+    existing_reconnect: BankConnection | None = None
+    if reconnect_id:
+        existing_reconnect = await session.get(BankConnection, uuid.UUID(str(reconnect_id)))
+        if not existing_reconnect or existing_reconnect.workspace_id != workspace_id:
+            raise ValueError("Reconnect target connection not found")
+        # Token reconnects do not carry OAuth state, so the request body may be
+        # the only source of provider_name. Never allow a pasted token for one
+        # provider to overwrite another provider's stored credentials.
+        if provider_name and provider_name != existing_reconnect.provider:
+            raise ValueError("Reconnect provider does not match target connection")
+        provider_name = existing_reconnect.provider
+
     if not provider_name:
         raise ValueError("OAuth callback missing provider")
 
     provider = get_provider(provider_name)
     connection_data = await provider.handle_oauth_callback(code)
 
-    reconnect_id = state_payload.get("reconnect_connection_id")
-    if reconnect_id:
-        existing = await session.get(BankConnection, uuid.UUID(reconnect_id))
-        if not existing or existing.workspace_id != workspace_id:
-            raise ValueError("Reconnect target connection not found")
-        existing.external_id = connection_data.external_id
-        existing.institution_name = (
-            connection_data.institution_name or existing.institution_name
+    if existing_reconnect:
+        existing_reconnect.external_id = connection_data.external_id
+        existing_reconnect.institution_name = (
+            connection_data.institution_name or existing_reconnect.institution_name
         )
-        existing.credentials = connection_data.credentials
-        existing.status = "active"
+        existing_reconnect.logo_url = _clean_logo_url(connection_data.logo_url) or existing_reconnect.logo_url
+        existing_reconnect.credentials = connection_data.credentials
+        existing_reconnect.status = "active"
         # Re-sync from current data on next sync cycle.
-        existing.last_sync_at = None
+        existing_reconnect.last_sync_at = None
         await session.commit()
-        await session.refresh(existing)
-        return existing
+        await session.refresh(existing_reconnect)
+        return existing_reconnect
+
+    flow_params = dict(state_payload.get("flow_params") or {})
+    flow_sync_assets = flow_params.pop("sync_assets", None)
+    initial_settings: dict[str, object] = {"flow_params": flow_params}
+    if sync_assets is None and isinstance(flow_sync_assets, bool):
+        sync_assets = flow_sync_assets
+    if sync_assets is not None:
+        initial_settings["sync_assets"] = sync_assets
 
     connection = BankConnection(
         workspace_id=workspace_id,
@@ -512,8 +565,9 @@ async def handle_oauth_callback(
         provider=provider_name,
         external_id=connection_data.external_id,
         institution_name=connection_data.institution_name,
+        logo_url=_clean_logo_url(connection_data.logo_url),
         credentials=connection_data.credentials,
-        settings={"flow_params": state_payload.get("flow_params") or {}},
+        settings=initial_settings,
         status="active",
     )
     session.add(connection)
@@ -533,6 +587,7 @@ async def handle_oauth_callback(
             connection_id=connection.id,
             external_id=acc_data.external_id,
             name=acc_data.name,
+            masked_number=acc_data.masked_number,
             type=acc_data.type,
             balance=acc_data.balance,
             currency=acc_data.currency,
@@ -578,12 +633,14 @@ async def handle_oauth_callback(
                 continue
 
             category_id = await _match_pluggy_category(
-                session, user_id, txn_data.pluggy_category, enabled=use_provider_cats
+                session, workspace_id, txn_data.pluggy_category, enabled=use_provider_cats
             )
             # Resolve payee entity from raw payee text
             payee_id = None
             if txn_data.payee:
-                payee_entity = await get_or_create_payee(session, user_id, txn_data.payee)
+                payee_entity = await get_or_create_payee(
+                    session, user_id, txn_data.payee, workspace_id=workspace_id
+                )
                 payee_id = payee_entity.id
 
             bill = (
@@ -645,9 +702,10 @@ async def handle_oauth_callback(
     await detect_transfer_pairs(session, workspace_id, candidate_ids=new_tx_ids)
 
     # Investment holdings live on /investments — separate endpoint from
-    # /accounts. Pulled after account setup so holdings are available on
-    # the Assets page immediately after the widget closes.
-    await _sync_holdings(session, user_id, connection, connection_data.credentials)
+    # /accounts. Pulled after account setup when enabled so holdings are
+    # available on the Assets page immediately after the widget closes.
+    if _sync_assets_enabled(connection.settings):
+        await _sync_holdings(session, user_id, connection, connection_data.credentials)
 
     connection.last_sync_at = datetime.now(timezone.utc)
     await session.commit()
@@ -961,6 +1019,7 @@ async def _sync_bill_finance_charges(
         else:
             tx = Transaction(
                 user_id=user_id,
+                workspace_id=account.workspace_id,
                 account_id=account.id,
                 external_id=external_id,
                 description=description,
@@ -1092,6 +1151,19 @@ async def sync_connection(
         credentials = await provider.refresh_credentials(connection.credentials)
         connection.credentials = credentials
 
+        # Backfill the institution logo for connections linked before logo
+        # capture existed. Best-effort: a failure here must never break sync.
+        if not connection.logo_url:
+            try:
+                logo = _clean_logo_url(await provider.get_institution_logo(credentials))
+                if logo:
+                    connection.logo_url = logo
+            except Exception:
+                logger.warning(
+                    "Failed to backfill logo for connection %s", connection.id,
+                    exc_info=True,
+                )
+
         # When the caller asks for fresh data (typically a user-initiated
         # manual sync), ask the provider to pull from the bank before we
         # read. Providers that don't expose an on-demand refresh return
@@ -1134,8 +1206,21 @@ async def sync_connection(
                 continue
 
             if account:
-                account.balance = acc_data.balance
+                # Normalize the provider sign using the account's CURRENT type,
+                # which reflects any user override (sync never rewrites `type`).
+                # SimpleFIN reports card debt as negative under a "checking"
+                # label; once the user overrides the type to credit_card the
+                # downstream sites negate it, so store positive-for-debt to keep
+                # them provider-agnostic and avoid double-counting.
+                account.balance = _simplefin_to_internal_balance(
+                    connection.provider, account.type, acc_data.balance
+                )
                 account.name = acc_data.name
+                # Backfills existing accounts on their next sync. Only written
+                # when the provider actually returns an identifier, so a payload
+                # that intermittently omits it can't blank out a known mask.
+                if acc_data.masked_number is not None:
+                    account.masked_number = acc_data.masked_number
                 if acc_data.type == "credit_card":
                     # Preserve existing CC metadata when the provider doesn't
                     # expose it. Pluggy's creditData fields (limit, close/due
@@ -1163,6 +1248,7 @@ async def sync_connection(
                     connection_id=connection.id,
                     external_id=acc_data.external_id,
                     name=acc_data.name,
+                    masked_number=acc_data.masked_number,
                     type=acc_data.type,
                     balance=acc_data.balance,
                     currency=acc_data.currency,
@@ -1202,12 +1288,21 @@ async def sync_connection(
 
             for txn_data in transactions_data:
                 existing = await session.execute(
-                    select(Transaction).where(
+                    select(Transaction)
+                    .where(
                         Transaction.account_id == account.id,
                         Transaction.external_id == txn_data.external_id,
                     )
+                    .order_by(Transaction.created_at)
                 )
-                existing_tx = existing.scalar_one_or_none()
+                # `.first()` rather than `.scalar_one_or_none()`: a prior sync
+                # race (two overlapping passes both select-then-insert the same
+                # external_id before either commits) can leave two rows sharing
+                # (account_id, external_id). scalar_one_or_none() would raise
+                # MultipleResultsFound and abort the whole connection's sync;
+                # we instead reconcile onto the oldest matching row and skip
+                # re-inserting, so a stray duplicate is harmless and never grows.
+                existing_tx = existing.scalars().first()
                 if existing_tx:
                     # User-flagged rows are frozen: skip status/bill drift so
                     # a re-sync can't revive a transaction the user hid.
@@ -1277,15 +1372,50 @@ async def sync_connection(
                                 )
                     continue
 
+                # Pass 4: recurring bill placeholder. If generate_pending
+                # already materialized this bill's occurrence, merge the incoming
+                # charge into that placeholder instead of duplicating (issue
+                # #116). The recurring link is preserved by upgrading in place.
+                incoming_currency = txn_data.currency or acc_data.currency or user_currency
+                placeholder = await recurring_match_service.find_placeholder_for_incoming(
+                    session, account.id, txn_data.amount, incoming_currency,
+                    txn_data.type, txn_data.date, txn_data.description,
+                )
+                if placeholder:
+                    if placeholder.is_ignored:
+                        continue
+                    placeholder.external_id = txn_data.external_id
+                    placeholder.source = "sync"
+                    placeholder.status = txn_data.status
+                    placeholder.raw_data = txn_data.raw_data
+                    if txn_data.payee:
+                        if not placeholder.payee:
+                            placeholder.payee = txn_data.payee
+                        placeholder.payee_id = (
+                            await get_or_create_payee(session, user_id, txn_data.payee)
+                        ).id
+                    merged_count += 1
+                    continue
+
                 category_id = await _match_pluggy_category(
-                    session, user_id, txn_data.pluggy_category, enabled=use_provider_cats
+                    session, workspace_id, txn_data.pluggy_category, enabled=use_provider_cats
                 )
 
                 # Resolve payee entity from raw payee text
                 sync_payee_id = None
                 if txn_data.payee:
-                    sync_payee_entity = await get_or_create_payee(session, user_id, txn_data.payee)
+                    sync_payee_entity = await get_or_create_payee(
+                        session, user_id, txn_data.payee, workspace_id=workspace_id
+                    )
                     sync_payee_id = sync_payee_entity.id
+
+                # No placeholder existed: if this charge fulfills an active bill's
+                # next occurrence, link it and advance the bill so a later
+                # generate_pending won't create a duplicate placeholder.
+                recurring_link = await recurring_match_service.find_bill_for_incoming(
+                    session, user_id, account.id, txn_data.amount, incoming_currency,
+                    txn_data.type, txn_data.date, txn_data.description,
+                )
 
                 bill = (
                     bills_by_external_id.get(txn_data.bill_external_id)
@@ -1312,12 +1442,15 @@ async def sync_connection(
                     installment_total_amount=txn_data.installment_total_amount,
                     installment_purchase_date=txn_data.installment_purchase_date,
                     bill_id=bill.id if bill else None,
+                    recurring_transaction_id=recurring_link.id if recurring_link else None,
                 )
                 apply_effective_date(
                     transaction, account, bill_due_date=bill.due_date if bill else None
                 )
                 session.add(transaction)
                 await session.flush()
+                if recurring_link is not None:
+                    recurring_match_service.advance_past(recurring_link, txn_data.date)
                 new_tx_ids.append(transaction.id)
                 if not category_id:
                     await apply_rules_to_transaction(session, user_id, transaction)
@@ -1349,10 +1482,11 @@ async def sync_connection(
         await _cleanup_phantom_duplicates(session, connection.id)
 
         # Refresh investment holdings (brokerage, fixed income, funds,
-        # etc.). Errors here are logged but don't fail the sync; a bank
-        # connector that doesn't expose /investments shouldn't block the
-        # transaction sync that just succeeded.
-        await _sync_holdings(session, user_id, connection, credentials)
+        # etc.) when enabled for this connection. Errors here are logged but
+        # don't fail the sync; a bank connector that doesn't expose
+        # /investments shouldn't block the transaction sync that just succeeded.
+        if _sync_assets_enabled(conn_settings):
+            await _sync_holdings(session, user_id, connection, credentials)
 
         connection.last_sync_at = datetime.now(timezone.utc)
         connection.status = "active"
@@ -1370,11 +1504,28 @@ async def sync_connection(
                 conn.status = "expired"
         raise
     except ProviderUserActionRequired:
-        # User must act in the provider's portal (e.g. EB restricted-mode
-        # account linking). Don't mark the connection errored — propagate
-        # so the API layer can surface the specific code to the UI.
+        # Stale/revoked provider credentials require a non-destructive
+        # reconnect path. Mark the connection unhealthy so the accounts page
+        # shows the reconnect banner, then let the API return a typed 409
+        # instead of a generic 500.
         await session.rollback()
+        async with session.begin():
+            conn = await session.get(BankConnection, connection_id)
+            if conn:
+                conn.status = "error"
         raise
+    except ProviderRateLimited:
+        # The bank/aggregator is throttling data requests (PSD2 caps unattended
+        # access, commonly ~4/day). The connection is healthy, so don't error
+        # it or 500 the request — skip this run, keep it active, and leave
+        # last_sync_at untouched so the next sync retries the same window.
+        await session.rollback()
+        async with session.begin():
+            conn = await session.get(BankConnection, connection_id)
+            if conn and conn.status != "expired":
+                conn.status = "active"
+        refreshed = await session.get(BankConnection, connection_id)
+        return refreshed, 0
     except Exception:
         # Mark connection as errored so UI shows reconnect banner
         await session.rollback()

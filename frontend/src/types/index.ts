@@ -22,6 +22,22 @@ export interface AdminUserList {
   total: number
 }
 
+export interface Passkey {
+  id: string
+  name: string
+  transports: string[] | null
+  aaguid: string | null
+  device_type: string | null
+  backed_up: boolean | null
+  created_at: string
+  last_used_at: string | null
+}
+
+export interface PasskeyOptionsResponse {
+  challenge_id: string
+  options: Record<string, unknown>
+}
+
 export interface AppSetting {
   key: string
   value: string
@@ -91,6 +107,7 @@ export interface BankConnection {
   provider: string
   institution_name: string
   display_name: string | null
+  logo_url: string | null
   external_id: string
   status: string
   settings: ConnectionSettings | null
@@ -101,6 +118,7 @@ export interface BankConnection {
 export interface ConnectionSettings {
   payee_source?: 'auto' | 'merchant' | 'payment_data' | 'description' | 'none'
   import_pending?: boolean
+  sync_assets?: boolean
 }
 
 export interface Account {
@@ -110,6 +128,13 @@ export interface Account {
   external_id: string | null
   name: string
   display_name: string | null
+  // Last 4 chars of the bank's identifier for the account, when the provider
+  // exposes one. Tells apart accounts a bank reports under an identical name.
+  masked_number: string | null
+  // Denormalized bank identity from the linked connection (null for manual
+  // accounts). Used to render the institution logo next to the account.
+  institution_name: string | null
+  institution_logo_url: string | null
   type: string
   balance: number
   current_balance: number
@@ -137,6 +162,19 @@ export interface CreditCardBill {
   total_amount: number
   currency: string
   minimum_payment: number | null
+}
+
+export interface Collection {
+  id: string
+  user_id: string
+  name: string
+  icon: string
+  color: string
+  position: number
+  account_ids: string[]
+  account_count: number
+  wallet_ids: string[]
+  wallet_count: number
 }
 
 export interface AccountSummary {
@@ -182,6 +220,8 @@ export interface Transaction {
   // available, cycle math otherwise). Setting it forces the tx into the
   // bill whose due_date matches.
   effective_bill_date: string | null
+  // The recurring bill this transaction fulfills, if any (issue #116).
+  recurring_transaction_id?: string | null
   splits: TransactionSplit[]
   // Shared-transaction view fields. Set per-request when the viewer
   // is a linked split member but not the owner. Render `viewer_share`
@@ -320,6 +360,29 @@ export interface Rule {
   actions: RuleAction[]
   priority: number
   is_active: boolean
+  apply_to_existing?: boolean
+  overwrite_existing_categories?: boolean
+}
+
+export interface RuleExportItem {
+  name: string
+  conditions_op: 'and' | 'or'
+  conditions: RuleCondition[]
+  actions: RuleAction[]
+  priority: number
+  is_active: boolean
+}
+
+export interface RuleExportPayload {
+  format: 'securo-categorization-rules'
+  version: number
+  rules: RuleExportItem[]
+}
+
+export interface RuleImportResponse {
+  imported: number
+  skipped: number
+  overwritten: number
 }
 
 export interface ImportLog {
@@ -372,6 +435,7 @@ export interface RecurringTransaction {
   start_date: string
   end_date: string | null
   is_active: boolean
+  auto_generate: boolean
   next_occurrence: string
   amount_primary: number | null
   fx_rate_used: number | null
@@ -389,7 +453,51 @@ export interface ProjectedTransaction {
   category_name: string | null
   category_icon: string | null
   category_color: string | null
+}
+
+export interface TransactionCalendarItem {
+  kind: 'actual' | 'projected'
+  id: string | null
+  recurring_id: string | null
+  date: string
+  description: string
+  amount: number
+  amount_primary: number | null
+  currency: string
+  type: 'debit' | 'credit'
+  account_id: string | null
+  account_name: string | null
+  category_id: string | null
+  category_name: string | null
+  category_icon: string | null
+  category_color: string | null
+  status: string | null
+  source: string | null
+  transfer_pair_id: string | null
+  is_transfer: boolean
   is_ignored: boolean
+}
+
+export interface TransactionCalendarDay {
+  date: string
+  in_month: boolean
+  ending_balance: number
+  income: number
+  expense: number
+  transfer_net: number
+  actual_count: number
+  projected_count: number
+  has_income: boolean
+  has_expense: boolean
+  has_transfer: boolean
+  items: TransactionCalendarItem[]
+}
+
+export interface TransactionCalendarResponse {
+  month: string
+  currency: string
+  account_ids: string[] | null
+  days: TransactionCalendarDay[]
 }
 
 export interface DashboardSummary {
@@ -493,6 +601,29 @@ export interface Asset {
   last_price: number | null
   last_price_at: string | null
   logo_url: string | null
+  // Ledger-derived (issue #235): weighted-average cost per unit (preço médio),
+  // cost basis of held units, cumulative realized gain, and whether the holding
+  // is driven by the transactions ledger.
+  average_price: number | null
+  total_invested: number | null
+  realized_gain: number | null
+  transaction_count: number
+}
+
+export interface AssetTransaction {
+  id: string
+  asset_id: string
+  kind: 'buy' | 'sell'
+  quantity: number
+  price: number
+  fee: number
+  date: string
+  source: string
+  notes: string | null
+  asset_name: string | null
+  ticker: string | null
+  currency: string | null
+  logo_url: string | null
 }
 
 export interface MarketSymbolMatch {
@@ -544,9 +675,10 @@ export interface Goal {
   target_amount_primary: number | null
   current_amount_primary: number | null
   target_date: string | null
-  tracking_type: 'manual' | 'account' | 'asset' | 'net_worth'
+  tracking_type: 'manual' | 'account' | 'asset' | 'asset_group' | 'net_worth'
   account_id: string | null
   asset_id: string | null
+  asset_group_id: string | null
   status: 'active' | 'completed' | 'paused' | 'archived'
   icon: string | null
   color: string | null
@@ -559,6 +691,7 @@ export interface Goal {
   on_track: 'ahead' | 'on_track' | 'behind' | 'overdue' | 'achieved' | null
   account_name: string | null
   asset_name: string | null
+  asset_group_name: string | null
 }
 
 export interface GoalSummary {
@@ -589,6 +722,9 @@ export interface TransactionsSummary {
   income: number
   expense: number
   net: number
+  // Absolute total of everything excluded from income/expense for the same
+  // rows — transfers, treat_as_transfer categories and ignored items (#242).
+  excluded: number
   currency: string
 }
 
@@ -615,6 +751,8 @@ export interface ReportDataPoint {
   date: string
   value: number
   breakdowns: Record<string, number>
+  change: number | null
+  composition?: ReportCompositionItem[]
 }
 
 export interface ReportMeta {

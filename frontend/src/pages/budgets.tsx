@@ -1,5 +1,7 @@
 import React, { useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { useDisplayLocale } from '@/hooks/use-display-locale'
+import { monthLabel } from '@/lib/month-utils'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { categories as categoriesApi, categoryGroups as groupsApi, budgets as budgetsApi } from '@/lib/api'
 import { toast } from 'sonner'
@@ -16,14 +18,14 @@ import {
 import type { Budget } from '@/types'
 import { Pencil, Trash2, Plus, Repeat, CalendarIcon } from 'lucide-react'
 import { format } from 'date-fns'
-import { ptBR, enUS } from 'date-fns/locale'
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover'
-import { Calendar } from '@/components/ui/calendar'
+import { MonthPicker } from '@/components/ui/monthpicker'
 import { PageHeader } from '@/components/page-header'
 import { CategoryIcon } from '@/components/category-icon'
 import { usePrivacyMode } from '@/hooks/use-privacy-mode'
 import { useAuth } from '@/contexts/auth-context'
 import { useWorkspace } from '@/contexts/workspace-context'
+import { resolveDateFnsLocale } from '@/lib/date-fns-locale'
 
 function formatCurrency(value: number, currency = 'USD', locale = 'en-US') {
   return new Intl.NumberFormat(locale, { style: 'currency', currency }).format(value)
@@ -58,11 +60,11 @@ export default function BudgetsPage() {
   const { user } = useAuth()
   const { canWrite } = useWorkspace()
   const userCurrency = user?.preferences?.currency_display ?? 'USD'
-  const locale = i18n.language === 'en' ? 'en-US' : i18n.language
+  const locale = useDisplayLocale()
   const queryClient = useQueryClient()
   const [selectedMonth, setSelectedMonth] = useState(currentMonth)
   const [monthCalOpen, setMonthCalOpen] = useState(false)
-  const dateFnsLocale = i18n.language === 'pt-BR' ? ptBR : enUS
+  const dateFnsLocale = resolveDateFnsLocale(i18n.resolvedLanguage ?? i18n.language)
   const monthParam = `${selectedMonth}-01`
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editing, setEditing] = useState<Budget | null>(null)
@@ -124,7 +126,8 @@ export default function BudgetsPage() {
     )
   }
 
-  const monthTitle = new Date(selectedMonth + '-02').toLocaleDateString(locale, { month: 'long', year: 'numeric' }).replace(/^\w/, c => c.toUpperCase())
+  const uiLocale = i18n.resolvedLanguage ?? i18n.language
+  const monthTitle = monthLabel(selectedMonth, uiLocale).replace(/^\w/, c => c.toUpperCase())
 
   return (
     <div>
@@ -152,12 +155,10 @@ export default function BudgetsPage() {
                 </button>
               </PopoverTrigger>
               <PopoverContent align="center" className="w-auto p-0">
-                <Calendar
-                  mode="single"
+                <MonthPicker
                   locale={dateFnsLocale}
-                  selected={new Date(`${selectedMonth}-01T00:00:00`)}
-                  defaultMonth={new Date(`${selectedMonth}-01T00:00:00`)}
-                  onSelect={(date) => {
+                  selectedMonth={new Date(`${selectedMonth}-01T00:00:00`)}
+                  onMonthSelect={(date) => {
                     if (!date) return
                     setSelectedMonth(format(date, 'yyyy-MM'))
                     setMonthCalOpen(false)
@@ -217,6 +218,8 @@ export default function BudgetsPage() {
                         <button
                           className="p-1.5 rounded-md text-muted-foreground hover:text-primary hover:bg-primary/5 transition-colors"
                           onClick={() => { setEditing(budget); setDialogOpen(true) }}
+                          aria-label={t('common.edit')}
+                          title={t('common.edit')}
                         >
                           <Pencil size={13} />
                         </button>
@@ -224,6 +227,8 @@ export default function BudgetsPage() {
                           className="p-1.5 rounded-md text-muted-foreground hover:text-rose-500 hover:bg-rose-50 transition-colors"
                           onClick={() => deleteMutation.mutate(budget.id)}
                           disabled={deleteMutation.isPending}
+                          aria-label={t('common.delete')}
+                          title={t('common.delete')}
                         >
                           <Trash2 size={13} />
                         </button>

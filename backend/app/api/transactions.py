@@ -16,15 +16,26 @@ from app.core.workspace_context import (
     current_writable_workspace,
 )
 from app.schemas.transaction import BulkAddToGroupRequest, BulkCategorizeRequest, BulkTagsRequest, CreateCounterpartRequest, LinkTransferRequest, TransactionCreate, TransactionRead, TransactionUpdate, TransferCreate, TransferRead
+from app.schemas.transaction_calendar import TransactionCalendarResponse
 from app.services import transaction_service
 from app.services.admin_service import get_credit_card_accounting_mode
+from app.services.transaction_calendar_service import get_transaction_calendar
 
 router = APIRouter(prefix="/api/transactions", tags=["transactions"])
 
 
 def _tag_fx_fallback(tx: TransactionRead, primary_currency: str) -> TransactionRead:
-    """Set fx_fallback=True when a cross-currency tx used 1:1 fallback rate."""
-    if tx.currency != primary_currency and tx.fx_rate_used is not None and tx.fx_rate_used == 1.0:
+    """Set fx_fallback=True when a cross-currency tx isn't backed by a real rate.
+
+    Covers both the legacy 1:1 fallback rate and rows left unconverted (NULL)
+    because no rate was available at stamp time (issue #353). The UI uses this
+    to warn the user and offer a manual rate.
+    """
+    if tx.currency != primary_currency and (
+        tx.amount_primary is None
+        or tx.fx_rate_used is None
+        or tx.fx_rate_used == 1.0
+    ):
         tx.fx_fallback = True
     return tx
 
@@ -33,10 +44,16 @@ class TransactionsSummary(BaseModel):
     """Income / expense / net totals across all rows matching the active
     filters (issue #185). Amounts are in the user's primary currency.
     Floats (not Decimal) so the JSON payload matches `amount_primary`
-    and the frontend gets plain numbers."""
+    and the frontend gets plain numbers.
+
+    `excluded` (issue #242) is the absolute total of everything filtered
+    out of income/expense for the same rows — paired transfers,
+    `treat_as_transfer` categories (transfers, investments, custom) and
+    ignored items — i.e. the complement of `counts_as_pnl()`."""
     income: float
     expense: float
     net: float
+    excluded: float
     currency: str
 
 
@@ -79,6 +96,7 @@ async def list_transactions(
     limit: int = Query(50, ge=1, le=500),
     include_opening_balance: bool = Query(False),
     exclude_transfers: bool = Query(False),
+    user_pnl_only: bool = Query(False, description="Return only rows that count toward dashboard/user income/expense totals"),
     tags: Optional[List[str]] = Query(None),
     min_amount: Optional[float] = Query(None, ge=0, description="Filter to transactions with absolute amount >= this value (primary currency)."),
     max_amount: Optional[float] = Query(None, ge=0, description="Filter to transactions with absolute amount <= this value (primary currency)."),
@@ -95,6 +113,7 @@ async def list_transactions(
         payee_id=payee_id, from_date=from_date, to_date=to_date, page=page, limit=limit,
         include_opening_balance=include_opening_balance, search=q, uncategorized=uncategorized,
         txn_type=type, exclude_transfers=exclude_transfers,
+        user_pnl_only=user_pnl_only,
         accounting_mode=accounting_mode,
         tags=tags,
         bill_id=bill_id,
@@ -114,6 +133,23 @@ async def list_transactions(
         else None
     )
     return PaginatedTransactions(items=items, total=total, page=page, limit=limit, summary=summary_out)
+
+
+@router.get("/calendar", response_model=TransactionCalendarResponse)
+async def transaction_calendar(
+    month: Optional[date] = Query(None),
+    account_id: Optional[uuid.UUID] = Query(None),
+    account_ids: Optional[List[uuid.UUID]] = Query(None),
+    ctx: WorkspaceContext = Depends(current_workspace),
+    session: AsyncSession = Depends(get_async_session),
+):
+    return await get_transaction_calendar(
+        session,
+        ctx.workspace.id,
+        ctx.user_id,
+        month,
+        account_ids=_merge_id_filters(account_id, account_ids),
+    )
 
 
 @router.get("/export")
@@ -191,9 +227,12 @@ async def bulk_categorize(
     ctx: WorkspaceContext = Depends(current_writable_workspace),
     session: AsyncSession = Depends(get_async_session),
 ):
-    count = await transaction_service.bulk_update_category(
-        session, ctx.workspace.id, data.transaction_ids, data.category_id
-    )
+    try:
+        count = await transaction_service.bulk_update_category(
+            session, ctx.workspace.id, data.transaction_ids, data.category_id
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     return {"updated": count}
 
 
@@ -378,6 +417,7 @@ async def update_transaction(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     if not transaction:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Transaction not found")
+    transaction = await transaction_service.get_transaction(session, transaction.id, ctx.workspace.id)
     primary_currency = ctx.user.primary_currency
     return _tag_fx_fallback(TransactionRead.model_validate(transaction, from_attributes=True), primary_currency)
 
@@ -393,6 +433,24 @@ async def toggle_ignore_transaction(
     )
     if not transaction:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Transaction not found")
+    primary_currency = ctx.user.primary_currency
+    return _tag_fx_fallback(TransactionRead.model_validate(transaction, from_attributes=True), primary_currency)
+
+
+@router.patch("/{transaction_id}/unlink-recurring", response_model=TransactionRead)
+async def unlink_recurring_transaction(
+    transaction_id: uuid.UUID,
+    ctx: WorkspaceContext = Depends(current_writable_workspace),
+    session: AsyncSession = Depends(get_async_session),
+):
+    transaction = await transaction_service.unlink_recurring_transaction(
+        session, transaction_id, ctx.workspace.id
+    )
+    if not transaction:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Transaction not found or not linked to a recurring bill",
+        )
     primary_currency = ctx.user.primary_currency
     return _tag_fx_fallback(TransactionRead.model_validate(transaction, from_attributes=True), primary_currency)
 

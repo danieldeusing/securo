@@ -12,7 +12,7 @@ class RuleCondition(BaseModel):
 
 
 class RuleAction(BaseModel):
-    op: str      # set_category, append_notes
+    op: str      # set_category, set_payee, append_notes, ignore
     value: Any   # category UUID str or notes string
 
 
@@ -23,6 +23,8 @@ class RuleCreate(BaseModel):
     actions: list[RuleAction]
     priority: int = 0
     is_active: bool = True
+    apply_to_existing: bool = True
+    overwrite_existing_categories: bool = False
 
 
 class RuleUpdate(BaseModel):
@@ -32,6 +34,8 @@ class RuleUpdate(BaseModel):
     actions: Optional[list[RuleAction]] = None
     priority: Optional[int] = None
     is_active: Optional[bool] = None
+    apply_to_existing: Optional[bool] = None
+    overwrite_existing_categories: bool = False
 
 
 class RuleRead(BaseModel):
@@ -45,3 +49,39 @@ class RuleRead(BaseModel):
     is_active: bool
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class RuleMutationResponse(RuleRead):
+    """A changed rule plus how many existing transactions it just affected."""
+
+    applied_count: int = 0
+
+
+class RuleCreateResponse(RuleMutationResponse):
+    """A created rule response kept for API compatibility."""
+
+
+class RuleExportItem(BaseModel):
+    name: str
+    conditions_op: str = "and"
+    conditions: list[RuleCondition]
+    actions: list[RuleAction]
+    priority: int = 0
+    is_active: bool = True
+
+
+class RuleExportPayload(BaseModel):
+    format: str = "securo-categorization-rules"
+    version: int = 1
+    rules: list[RuleExportItem]
+
+
+class RuleImportRequest(BaseModel):
+    payload: RuleExportPayload
+    overwrite: bool = False
+
+
+class RuleImportResponse(BaseModel):
+    imported: int
+    skipped: int
+    overwritten: int
