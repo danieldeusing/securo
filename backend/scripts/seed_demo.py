@@ -40,6 +40,7 @@ from app.models.rule import Rule
 from app.models.transaction import Transaction
 from app.models.transaction_split import TransactionSplit
 from app.models.user import User
+from app.models.workspace import Workspace, WorkspaceMember
 from app.schemas.user import UserCreate
 from app.services.workspace_service import create_personal_workspace_for_user
 from fastapi_users.db import SQLAlchemyUserDatabase
@@ -176,6 +177,35 @@ async def _wipe(session, user_id: uuid.UUID) -> None:
     await session.commit()
 
 
+async def _resolve_demo_workspace(session, user: User) -> uuid.UUID:
+    """The workspace every seeded row belongs to.
+
+    Mirrors app.core.workspace_autostamp._resolve_workspace_for_user: the
+    user's oldest non-archived workspace. Falls back to creating the personal
+    workspace on a fresh database.
+    """
+    row = (await session.execute(
+        select(Workspace.id)
+        .join(WorkspaceMember, WorkspaceMember.workspace_id == Workspace.id)
+        .where(
+            WorkspaceMember.user_id == user.id,
+            Workspace.is_archived.is_(False),
+        )
+        .order_by(Workspace.created_at.asc())
+        .limit(1)
+    )).first()
+    if row:
+        # A visitor may have renamed it; put it back so the demo reads right.
+        await session.execute(
+            Workspace.__table__.update()
+            .where(Workspace.id == row[0])
+            .values(name="Pessoal", kind="personal")
+        )
+        return row[0]
+    workspace = await create_personal_workspace_for_user(session, user)
+    return workspace.id
+
+
 # ---------------------------------------------------------------------------
 # Main seeder
 # ---------------------------------------------------------------------------
@@ -215,15 +245,42 @@ async def seed(email: str, password: str, months: int) -> None:
         print(f"  user {uid}")
 
         # 1b. Personal workspace ---------------------------------------------
-        # Every financial entity (Account, Category, Transaction, ...)
-        # now has a NOT NULL workspace_id. The autostamp listener fills
-        # it in for ORM `session.add()` inserts when user_id is set, but
-        # bulk pg_insert() calls (transactions, asset values) bypass the
-        # listener and need workspace_id passed explicitly.
-        workspace = await create_personal_workspace_for_user(session, user)
-        wsid = workspace.id
+        # Every financial entity (Account, Category, Transaction, ...) has a
+        # NOT NULL workspace_id, and this script now passes it explicitly on
+        # every insert. It used to rely on the autostamp listener for ORM
+        # `session.add()` rows while passing `wsid` only to the bulk
+        # pg_insert() calls, and the two resolve the workspace differently:
+        # the listener takes the user's OLDEST non-archived workspace, while
+        # create_personal_workspace_for_user() has no ORDER BY at all. On a
+        # single-workspace database they agree, so this looked fine. On the
+        # public demo, where visitors create workspaces that are never
+        # cleaned up, they diverged and accounts landed in one workspace
+        # while transactions went to another, leaving the dashboard empty.
+        #
+        # Pick the same workspace the listener would, so the two can never
+        # disagree again even if an insert is added without workspace_id.
+        wsid = await _resolve_demo_workspace(session, user)
         await session.commit()
         print(f"  workspace {wsid}")
+
+        # Visitors on the public demo can create workspaces, and nothing ever
+        # removed them: they pile up in the switcher and, worse, the oldest of
+        # them can win the autostamp lookup. Archive everything except the one
+        # we seed so each reset returns the demo to a single clean workspace.
+        stray = (await session.execute(
+            select(Workspace.id)
+            .join(WorkspaceMember, WorkspaceMember.workspace_id == Workspace.id)
+            .where(WorkspaceMember.user_id == uid, Workspace.id != wsid,
+                   Workspace.is_archived.is_(False))
+        )).scalars().all()
+        if stray:
+            await session.execute(
+                Workspace.__table__.update()
+                .where(Workspace.id.in_(stray))
+                .values(is_archived=True)
+            )
+            await session.commit()
+            print(f"  {len(stray)} stray workspaces archived")
 
         # 2. Accounts --------------------------------------------------------
         accounts: list[Account] = []
@@ -231,6 +288,7 @@ async def seed(email: str, password: str, months: int) -> None:
         for tmpl in ACCOUNTS:
             acc = Account(
                 user_id=uid,
+                workspace_id=wsid,
                 name=tmpl["name"],
                 type=tmpl["type"],
                 currency=tmpl["currency"],
@@ -254,7 +312,7 @@ async def seed(email: str, password: str, months: int) -> None:
         # 3. Categories ------------------------------------------------------
         cat_by_name: dict[str, Category] = {}
         for name, color, icon, _kind in CATEGORIES:
-            c = Category(user_id=uid, name=name, color=color, icon=icon)
+            c = Category(user_id=uid, workspace_id=wsid, name=name, color=color, icon=icon)
             session.add(c)
             cat_by_name[name] = c
         await session.flush()
@@ -406,6 +464,7 @@ async def seed(email: str, password: str, months: int) -> None:
             )
             asset = Asset(
                 user_id=uid,
+                workspace_id=wsid,
                 name=tmpl["name"],
                 type="investment",
                 currency=tmpl["currency"],
@@ -442,6 +501,7 @@ async def seed(email: str, password: str, months: int) -> None:
         for tmpl in MANUAL_ASSETS:
             asset = Asset(
                 user_id=uid,
+                workspace_id=wsid,
                 name=tmpl["name"],
                 type=tmpl["type"],
                 currency=tmpl["currency"],
@@ -479,6 +539,7 @@ async def seed(email: str, password: str, months: int) -> None:
             acc = brl_credit if cat_name in cc_recurring else brl_checking
             session.add(RecurringTransaction(
                 user_id=uid,
+                workspace_id=wsid,
                 account_id=acc.id,
                 category_id=cat_by_name[cat_name].id,
                 description=desc,
@@ -497,6 +558,7 @@ async def seed(email: str, password: str, months: int) -> None:
         # 8. Goals -----------------------------------------------------------
         session.add(Goal(
             user_id=uid,
+            workspace_id=wsid,
             name="Reserva de Emergência",
             target_amount=Decimal("8000.00"),
             current_amount=Decimal("5000.00"),
@@ -510,6 +572,7 @@ async def seed(email: str, password: str, months: int) -> None:
         ))
         session.add(Goal(
             user_id=uid,
+            workspace_id=wsid,
             name="Viagem ao Japão",
             target_amount=Decimal("6000.00"),
             current_amount=Decimal("2500.00"),
@@ -530,6 +593,7 @@ async def seed(email: str, password: str, months: int) -> None:
         # each housemate owes their portion.
         casa = Group(
             user_id=uid,
+            workspace_id=wsid,
             name="Casa",
             kind="social",
             default_currency="BRL",
@@ -622,6 +686,7 @@ async def seed(email: str, password: str, months: int) -> None:
                 continue
             session.add(Rule(
                 user_id=uid,
+                workspace_id=wsid,
                 name=r["name"],
                 conditions_op=r.get("conditions_op", "and"),
                 conditions=r["conditions"],
@@ -662,6 +727,7 @@ async def seed(email: str, password: str, months: int) -> None:
                     continue
                 session.add(Budget(
                     user_id=uid,
+                    workspace_id=wsid,
                     category_id=cat.id,
                     amount=amount,
                     month=m,
