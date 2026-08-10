@@ -10,6 +10,13 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardFooter } from '@/components/ui/card'
 import { CurrencySelect } from '@/components/currency-select'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { AuthBrandPanel } from '@/components/auth-brand-panel'
 import { cn } from '@/lib/utils'
 import { Sun, Moon, Globe } from 'lucide-react'
@@ -101,15 +108,16 @@ export default function SetupPage() {
                   <Globe size={14} />
                   {t('setup.language')}
                 </Label>
-                <select
-                  value={currentLang}
-                  onChange={(e) => i18n.changeLanguage(e.target.value)}
-                  className="w-full border border-border rounded-lg px-2 py-1.5 text-sm bg-card text-foreground focus:outline-none focus:ring-2 focus:ring-primary"
-                >
-                  {SUPPORTED_LANGS.map(({ code, label }) => (
-                    <option key={code} value={code}>{label}</option>
-                  ))}
-                </select>
+                <Select value={currentLang} onValueChange={(lng) => i18n.changeLanguage(lng)}>
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {SUPPORTED_LANGS.map(({ code, label }) => (
+                      <SelectItem key={code} value={code}>{label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
               <div className="space-y-1.5">
                 <Label className="text-sm">{t('setup.theme')}</Label>
