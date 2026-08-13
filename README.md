@@ -171,6 +171,8 @@ COMPOSE_PROFILES=agents
 
 Then `docker compose up -d`. Settings → AI Agents to add a provider connection. Off by default; zero cost when off.
 
+`COMPOSE_PROFILES=agents` only tells Docker Compose to start the extra `mcp-server` container. On a non-Docker install (bare metal, LXC) set `AGENTS_ENABLED=true` alone, and point `AGENTS_BUILTIN_MCP_URL` at the MCP server if you run one.
+
 ## Tech Stack
 
 | Layer | Stack |
