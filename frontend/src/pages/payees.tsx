@@ -864,10 +864,10 @@ export default function PayeesPage() {
                 asks for. */}
             {allKinds.length > 0 && (
               <div className="space-y-2">
-                <Label>{t('payees.taxIds', 'Fiscal documents')}</Label>
+                <Label>{t('payees.taxIds', 'Tax IDs')}</Label>
                 {taxIdRows.length === 0 && (
                   <p className="text-[11px] text-muted-foreground leading-relaxed">
-                    {t('payees.taxIdsEmpty', 'None yet. Add one if you invoice this contact.')}
+                    {t('payees.taxIdsEmpty', 'None yet. Add one if you invoice this payee.')}
                   </p>
                 )}
                 {taxIdRows.map((row, index) => {
@@ -932,7 +932,7 @@ export default function PayeesPage() {
                     }}
                   >
                     <Plus size={14} className="mr-1" />
-                    {t('payees.addTaxId', 'Add document')}
+                    {t('payees.addTaxId', 'Add')}
                   </Button>
                 )}
               </div>
