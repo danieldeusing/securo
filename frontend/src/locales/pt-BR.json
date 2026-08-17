@@ -93,7 +93,7 @@
     },
     "empty": {
       "title": "Nenhum resultado para \"{{query}}\"",
-      "hint": "Tente outra palavra, um cadastro, ou um valor."
+      "hint": "Tente outra palavra, o nome de um cadastro, ou um valor."
     },
     "footer": {
       "tagline": "controle total das suas finanças",
@@ -698,7 +698,7 @@
     "payeeMerchant": "Apenas nome do comerciante",
     "payeePaymentData": "Nome do pagador/recebedor",
     "payeeDescription": "Descrição da transação",
-    "payeeNone": "Não definir cadastro",
+    "payeeNone": "Não atribuir cadastro",
     "importPending": "Importar transações pendentes",
     "syncAssets": "Importar ativos de investimento",
     "syncAssetsHint": "Quando desativado, esta conexão sincroniza contas e transações, mas não altera os investimentos do provedor.",
@@ -871,7 +871,7 @@
     "blankConditionValue": "Toda condição precisa de um valor. Uma condição em branco corresponderia a todas as transações.",
     "addAction": "Adicionar ação",
     "setCategory": "Definir categoria",
-    "setPayee": "Definir cadastro",
+    "setPayee": "Atribuir cadastro",
     "selectPayee": "Selecionar cadastro...",
     "appendNotes": "Adicionar tags/notas",
     "ignoreAction": "Ignorar transação",
@@ -1019,7 +1019,7 @@
     "importedWithExcluded": "{{imported}} importadas, {{skipped}} ignoradas, {{excluded}} excluídas",
     "suggested": "Sugerida",
     "page": "Página {{current}} de {{total}}",
-    "mapPayee": "Coluna de cadastro",
+    "mapPayee": "Coluna do cadastro",
     "mapExternalId": "Coluna de ID da transação",
     "mapNotes": "Coluna de notas"
   },
@@ -1238,8 +1238,8 @@
     "title": "Cadastros",
     "section": "Configuração",
     "payee": "Cadastro",
-    "noPayee": "Sem cadastro",
-    "rawPayee": "Cadastro original",
+    "noPayee": "Sem cadastro vinculado",
+    "rawPayee": "Descrição original",
     "name": "Nome",
     "type": "Tipo",
     "notes": "Notas",
