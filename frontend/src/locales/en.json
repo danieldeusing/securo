@@ -1249,7 +1249,7 @@
     "paymentTerms": "Payment terms (days)",
     "taxIds": "Tax IDs",
     "addTaxId": "Add",
-    "taxIdsEmpty": "None yet. Add one if you invoice this payee.",
+    "taxIdsEmpty": "None yet. Add one if you need it for tax purposes.",
     "taxIdKind": "Document type",
     "searchTaxIdKind": "Search document or country…",
     "invalidTaxId": "Check this document: it does not look valid.",

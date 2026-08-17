@@ -1249,7 +1249,7 @@
     "paymentTerms": "Plazo de pago (días)",
     "taxIds": "Datos fiscales",
     "addTaxId": "Añadir",
-    "taxIdsEmpty": "Ninguno todavía. Añade uno si le facturas a este beneficiario.",
+    "taxIdsEmpty": "Ninguno todavía. Añade uno si lo necesitas a efectos fiscales.",
     "taxIdKind": "Tipo de documento",
     "searchTaxIdKind": "Buscar documento o país…",
     "invalidTaxId": "Revisa este documento: no parece válido.",

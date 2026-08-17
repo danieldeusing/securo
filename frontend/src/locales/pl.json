@@ -1324,7 +1324,7 @@
     "paymentTerms": "Termin płatności (dni)",
     "taxIds": "Dane podatkowe",
     "addTaxId": "Dodaj",
-    "taxIdsEmpty": "Jeszcze żadnego. Dodaj, jeśli fakturujesz tego odbiorcę.",
+    "taxIdsEmpty": "Jeszcze żadnego. Dodaj, jeśli potrzebujesz go do celów podatkowych.",
     "taxIdKind": "Typ dokumentu",
     "searchTaxIdKind": "Szukaj dokumentu lub kraju…",
     "invalidTaxId": "Sprawdź ten dokument: nie wygląda na prawidłowy.",

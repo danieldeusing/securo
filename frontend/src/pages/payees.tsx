@@ -867,7 +867,7 @@ export default function PayeesPage() {
                 <Label>{t('payees.taxIds', 'Tax IDs')}</Label>
                 {taxIdRows.length === 0 && (
                   <p className="text-[11px] text-muted-foreground leading-relaxed">
-                    {t('payees.taxIdsEmpty', 'None yet. Add one if you invoice this payee.')}
+                    {t('payees.taxIdsEmpty', 'None yet. Add one if you need it for tax purposes.')}
                   </p>
                 )}
                 {taxIdRows.map((row, index) => {

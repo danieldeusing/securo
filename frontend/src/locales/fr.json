@@ -1249,7 +1249,7 @@
     "paymentTerms": "Délai de paiement (jours)",
     "taxIds": "Données fiscales",
     "addTaxId": "Ajouter",
-    "taxIdsEmpty": "Aucun pour l'instant. Ajoutez-en un si vous facturez ce bénéficiaire.",
+    "taxIdsEmpty": "Aucun pour l'instant. Ajoutez-en un si vous en avez besoin à des fins fiscales.",
     "taxIdKind": "Type de document",
     "searchTaxIdKind": "Rechercher un document ou un pays…",
     "invalidTaxId": "Vérifiez ce document : il ne semble pas valide.",

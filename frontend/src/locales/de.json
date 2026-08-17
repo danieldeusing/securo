@@ -1249,7 +1249,7 @@
     "paymentTerms": "Zahlungsziel (Tage)",
     "taxIds": "Steuerdaten",
     "addTaxId": "Hinzufügen",
-    "taxIdsEmpty": "Noch keines. Füge eines hinzu, wenn du diesem Empfänger Rechnungen stellst.",
+    "taxIdsEmpty": "Noch keines. Füge eines hinzu, wenn du es für steuerliche Zwecke brauchst.",
     "taxIdKind": "Dokumentart",
     "searchTaxIdKind": "Dokument oder Land suchen…",
     "invalidTaxId": "Prüfe dieses Dokument: es sieht nicht gültig aus.",
