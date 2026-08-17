@@ -11,12 +11,37 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.payee import Payee
 from app.schemas.payee import PayeeCreate, PayeeUpdate
 from app.services.payee_service import (
     create_payee,
     get_or_create_payee,
     update_payee,
 )
+
+
+# ---------------------------------------------------------------------------
+# schema shape
+# ---------------------------------------------------------------------------
+def test_no_column_default_hands_back_the_retired_value():
+    """The bulk sync path inserts without naming `type`, so anything the
+    schema fills in on its behalf becomes the effective default for every
+    row sync creates.
+
+    `type` used to carry `DEFAULT 'merchant'`, and leaving it there while
+    retiring the value would have quietly resurrected it on Postgres. This
+    assertion is on the model rather than on behaviour because the test
+    database is built from the model and never has server defaults at all,
+    so a behavioural test here proves nothing about production.
+    """
+    assert Payee.__table__.c.type.server_default is None
+    assert Payee.__table__.c.type.nullable is True
+
+
+def test_provenance_is_required():
+    """A row with no `source` cannot be told apart from one somebody typed
+    in, which is the whole distinction the column exists to make."""
+    assert Payee.__table__.c.source.nullable is False
 
 
 # ---------------------------------------------------------------------------

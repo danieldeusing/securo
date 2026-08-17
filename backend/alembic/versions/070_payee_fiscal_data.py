@@ -113,7 +113,21 @@ def upgrade() -> None:
     # `merchant` is not a legal nature, and no honest one can be derived from
     # a bank descriptor, so those rows become unknown rather than being
     # guessed into `company`.
-    op.alter_column("payees", "type", existing_type=sa.String(length=20), nullable=True)
+    #
+    # The server default has to go with it. An insert that omits `type` —
+    # which is what the bulk sync path emits, since it never sets one —
+    # would otherwise be handed `merchant` by the database and quietly
+    # resurrect the value this migration exists to retire. Nothing in the
+    # test suite would notice: tests build their schema from the model,
+    # which never carried this default, so only the migrated database has
+    # it.
+    op.alter_column(
+        "payees",
+        "type",
+        existing_type=sa.String(length=20),
+        nullable=True,
+        server_default=None,
+    )
     op.execute("UPDATE payees SET type = NULL WHERE type = 'merchant'")
 
 
@@ -121,7 +135,13 @@ def downgrade() -> None:
     # Restore `merchant` for the rows it was inferred from. Anything whose
     # legal nature was set after this migration keeps it.
     op.execute("UPDATE payees SET type = 'merchant' WHERE type IS NULL")
-    op.alter_column("payees", "type", existing_type=sa.String(length=20), nullable=False)
+    op.alter_column(
+        "payees",
+        "type",
+        existing_type=sa.String(length=20),
+        nullable=False,
+        server_default="merchant",
+    )
     op.drop_column("payees", "source")
     op.drop_index("ix_payee_tax_ids_workspace_kind_value", table_name="payee_tax_ids")
     op.drop_index("ix_payee_tax_ids_workspace_id", table_name="payee_tax_ids")
