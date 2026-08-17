@@ -19,6 +19,23 @@ Three additive changes, none of them requiring a backfill:
   - `workspaces.tax_jurisdiction`, which selects that pack. Nullable, and
     null is a working configuration: the registry falls back to free-text
     documents, so a country without a pack works on day one.
+
+Plus one change that is not additive, and is here rather than later because
+later is too late: `payees.source`, and the retirement of the `merchant`
+value from `payees.type`.
+
+`type` now holds a legal nature (`person` or `company`) or null. It used to
+also hold `merchant`, which is a *role* — something a counterparty does,
+not what it legally is. That value was the only thing distinguishing the
+hundreds of rows sync creates from card descriptors, so it is harvested
+into `source` before being dropped rather than discarded.
+
+`source` has to be added now: provenance is only knowable at the moment of
+insert, so any payee created before the column exists could never be
+classified afterwards. The seeding below is the one and only chance to
+recover it for existing rows, and it is an inference, not a record — a
+payee somebody typed in by hand and left at the old `merchant` default is
+indistinguishable from one sync created, and lands in `sync`.
 """
 from typing import Sequence, Union
 
@@ -76,8 +93,36 @@ def upgrade() -> None:
         ["workspace_id", "kind", "value"],
     )
 
+    # Added with a default so existing rows are valid immediately, then the
+    # default is dropped: provenance must be stated by whoever inserts, never
+    # silently assumed for future writes.
+    op.add_column(
+        "payees",
+        sa.Column(
+            "source",
+            sa.String(length=20),
+            nullable=False,
+            server_default="manual",
+        ),
+    )
+    # Harvest the signal `merchant` was carrying before retiring it. This is
+    # the last moment it exists.
+    op.execute("UPDATE payees SET source = 'sync' WHERE type = 'merchant'")
+    op.alter_column("payees", "source", server_default=None)
+
+    # `merchant` is not a legal nature, and no honest one can be derived from
+    # a bank descriptor, so those rows become unknown rather than being
+    # guessed into `company`.
+    op.alter_column("payees", "type", existing_type=sa.String(length=20), nullable=True)
+    op.execute("UPDATE payees SET type = NULL WHERE type = 'merchant'")
+
 
 def downgrade() -> None:
+    # Restore `merchant` for the rows it was inferred from. Anything whose
+    # legal nature was set after this migration keeps it.
+    op.execute("UPDATE payees SET type = 'merchant' WHERE type IS NULL")
+    op.alter_column("payees", "type", existing_type=sa.String(length=20), nullable=False)
+    op.drop_column("payees", "source")
     op.drop_index("ix_payee_tax_ids_workspace_kind_value", table_name="payee_tax_ids")
     op.drop_index("ix_payee_tax_ids_workspace_id", table_name="payee_tax_ids")
     op.drop_index("ix_payee_tax_ids_payee_id", table_name="payee_tax_ids")

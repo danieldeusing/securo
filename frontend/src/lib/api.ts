@@ -711,7 +711,8 @@ export const fiscal = {
 
 export interface PayeeWritePayload {
   name?: string
-  type?: string
+  /** Null clears the legal nature. `source` is never writable. */
+  type?: 'person' | 'company' | null
   notes?: string
   email?: string | null
   phone?: string | null

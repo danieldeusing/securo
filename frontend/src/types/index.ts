@@ -387,7 +387,10 @@ export interface Payee {
   id: string
   user_id: string
   name: string
-  type: 'merchant' | 'person' | 'company'
+  /** Legal nature, or null when unknown — the normal state for a row sync created. */
+  type: 'person' | 'company' | null
+  /** Where the row came from. Server-set at creation and never editable. */
+  source: 'manual' | 'sync' | 'import'
   is_favorite: boolean
   notes: string | null
   email: string | null

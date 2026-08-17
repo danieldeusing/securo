@@ -1272,9 +1272,8 @@
     "mergeTarget": "Mesclar em",
     "selectTarget": "Selecionar pessoa de destino...",
     "merged": "Pessoas mescladas ({{count}} transações reatribuídas)",
-    "typeMerchant": "Comerciante",
-    "typePerson": "Pessoa física",
-    "typeCompany": "Empresa",
+    "typePerson": "Pessoa Física",
+    "typeCompany": "Pessoa Jurídica",
     "allTypes": "Todos os tipos",
     "filterByType": "Filtrar por tipo",
     "favoritesOnly": "Apenas favoritos",
@@ -1282,7 +1281,8 @@
     "deleteTitle": "Excluir pessoa",
     "deleteConfirm": "Tem certeza de que deseja excluir esta pessoa? Isso também a removerá de todas as transações associadas.",
     "deleteMultipleTitle": "Excluir pessoas",
-    "deleteMultipleConfirm": "Tem certeza de que deseja excluir as {{count}} pessoas selecionadas? Isso também as removerá de todas as transações associadas."
+    "deleteMultipleConfirm": "Tem certeza de que deseja excluir as {{count}} pessoas selecionadas? Isso também as removerá de todas as transações associadas.",
+    "typeUnset": "Não informado"
   },
   "fiscal": {
     "kind": {

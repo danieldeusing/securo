@@ -71,12 +71,22 @@ async def get_or_create_payee(
     name: str,
     *,
     workspace_id: Optional[uuid.UUID] = None,
+    source: str = "sync",
 ) -> Payee:
     """Find a payee by name (case-insensitive) or create a new one.
 
     `user_id` is kept first for backwards compatibility with import/connection
     sync paths. When `workspace_id` is provided, the lookup scopes by workspace;
     otherwise the autostamp listener fills it in on insert.
+
+    `source` is stamped only on rows this call creates. An existing payee is
+    returned untouched, so a counterparty somebody entered by hand keeps
+    saying so even after sync sees the same name — the same protection that
+    already keeps sync from overwriting manual edits.
+
+    Defaults to `sync` because that is what this function is for: the bulk
+    path that turns bank descriptors into rows. The CSV importer passes
+    `import` explicitly.
     """
     name = name.strip()
     if not name:
@@ -95,7 +105,7 @@ async def get_or_create_payee(
     if payee:
         return payee
 
-    payee = Payee(user_id=user_id, name=name)
+    payee = Payee(user_id=user_id, name=name, source=source)
     if workspace_id is not None:
         payee.workspace_id = workspace_id
     session.add(payee)
@@ -175,7 +185,9 @@ async def create_payee(
         raise ValueError("A payee with this name already exists")
 
     fields = data.model_dump(exclude={"tax_ids"})
-    payee = Payee(user_id=user_id, workspace_id=workspace_id, **fields)
+    # Stamped here rather than taken from the request: this is the path a
+    # person went through a form to reach.
+    payee = Payee(user_id=user_id, workspace_id=workspace_id, source="manual", **fields)
     session.add(payee)
     await session.flush()
     await _apply_tax_ids(session, payee, workspace_id, data.tax_ids)

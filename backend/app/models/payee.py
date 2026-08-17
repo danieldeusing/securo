@@ -22,7 +22,29 @@ class Payee(Base):
         UUID(as_uuid=True), ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
     )
     name: Mapped[str] = mapped_column(String(255))
-    type: Mapped[str] = mapped_column(String(20), default="merchant")
+    # Legal nature: `person` or `company`, and null when unknown.
+    #
+    # Null is the common case and is not a gap to be filled: sync names a
+    # counterparty from a bank descriptor, and "UBER *TRIP" does not say
+    # whether it is an individual or a company. Guessing would stamp an
+    # inference as a fact, and the answer only matters once a document is
+    # attached — at which point the document itself settles it, a CNPJ
+    # meaning company and a CPF meaning person.
+    #
+    # What this deliberately is *not* is a role. There is no `merchant`
+    # value: being a merchant is something a counterparty does, not what it
+    # legally is, and mixing one role into an enum of two legal natures is
+    # the same category error this model already refuses for `client`.
+    type: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    # Where this row came from. Set once, at creation, and never updated:
+    # provenance is only knowable at the moment of insert, so a payee
+    # created before this column existed can never be classified.
+    #
+    # It exists because sync creates payees in bulk — hundreds of card
+    # descriptors — and anything that offers the user a list of
+    # counterparties to bill needs to tell those apart from the handful
+    # somebody typed in on purpose.
+    source: Mapped[str] = mapped_column(String(20), default="manual", nullable=False)
     is_favorite: Mapped[bool] = mapped_column(Boolean, default=False)
     notes: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
     # Contact and billing details. All nullable and all expected to stay

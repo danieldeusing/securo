@@ -1353,7 +1353,6 @@
     "merged_few": "Scalono odbiorców (przypisano ponownie {{count}} transakcje)",
     "merged_many": "Scalono odbiorców (przypisano ponownie {{count}} transakcji)",
     "merged_other": "Scalono odbiorców (przypisano ponownie {{count}} transakcji)",
-    "typeMerchant": "Sprzedawca",
     "typePerson": "Osoba",
     "typeCompany": "Firma",
     "allTypes": "Wszystkie typy",
@@ -1363,7 +1362,8 @@
     "deleteTitle": "Usuń odbiorcę",
     "deleteConfirm": "Czy na pewno chcesz usunąć tego odbiorcę? Usunie to również odbiorcę ze wszystkich powiązanych transakcji.",
     "deleteMultipleTitle": "Usuń odbiorców",
-    "deleteMultipleConfirm": "Czy na pewno chcesz usunąć {{count}} wybranych odbiorców? Usunie to ich również ze wszystkich powiązanych transakcji."
+    "deleteMultipleConfirm": "Czy na pewno chcesz usunąć {{count}} wybranych odbiorców? Usunie to ich również ze wszystkich powiązanych transakcji.",
+    "typeUnset": "Nie określono"
   },
   "fiscal": {
     "kind": {

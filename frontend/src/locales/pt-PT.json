@@ -1272,9 +1272,8 @@
     "mergeTarget": "Mesclar em",
     "selectTarget": "Selecionar entidade destino...",
     "merged": "Entidades mesclados ({{count}} transações reatribuídas)",
-    "typeMerchant": "Comerciante",
-    "typePerson": "Pessoa",
-    "typeCompany": "Empresa",
+    "typePerson": "Pessoa singular",
+    "typeCompany": "Pessoa coletiva",
     "allTypes": "Todos os tipos",
     "filterByType": "Filtrar por tipo",
     "favoritesOnly": "Apenas favoritos",
@@ -1282,7 +1281,8 @@
     "deleteTitle": "Eliminar entidade",
     "deleteConfirm": "Tem a certeza que deseja eliminar este entidade? Isto também o irá remover de quaisquer transações associadas.",
     "deleteMultipleTitle": "Eliminar entidades",
-    "deleteMultipleConfirm": "Tem a certeza que deseja eliminar os {{count}} entidades selecionados? Isto também os irá remover de quaisquer transações associadas."
+    "deleteMultipleConfirm": "Tem a certeza que deseja eliminar os {{count}} entidades selecionados? Isto também os irá remover de quaisquer transações associadas.",
+    "typeUnset": "Não indicado"
   },
   "fiscal": {
     "kind": {

@@ -74,8 +74,10 @@ export default function PayeesPage() {
   const { user } = useAuth()
   const { canWrite } = useWorkspace()
   const userCurrency = user?.preferences?.currency_display ?? 'USD'
+  // No entry for an unset type: most rows come from sync, which cannot know
+  // a legal nature from a bank descriptor, and a badge reading "unknown" on
+  // hundreds of rows is noise rather than information.
   const typeLabels: Record<string, string> = {
-    merchant: t('payees.typeMerchant'),
     person: t('payees.typePerson'),
     company: t('payees.typeCompany'),
   }
@@ -144,7 +146,10 @@ export default function PayeesPage() {
 
   // Form state
   const [formName, setFormName] = useState('')
-  const [formType, setFormType] = useState<string>('merchant')
+  // '' means the legal nature was not stated, which is the resting state for
+  // anything sync created and a legitimate answer, not a missing one.
+  type FormType = '' | 'person' | 'company'
+  const [formType, setFormType] = useState<FormType>('')
   const [formNotes, setFormNotes] = useState('')
   const [formEmail, setFormEmail] = useState('')
   const [formPhone, setFormPhone] = useState('')
@@ -299,7 +304,7 @@ export default function PayeesPage() {
   const openCreate = () => {
     setEditingPayee(null)
     setFormName('')
-    setFormType('merchant')
+    setFormType('')
     setFormNotes('')
     setFormEmail('')
     setFormPhone('')
@@ -312,7 +317,7 @@ export default function PayeesPage() {
   const openEdit = (payee: Payee) => {
     setEditingPayee(payee)
     setFormName(payee.name)
-    setFormType(payee.type)
+    setFormType(payee.type ?? '')
     setFormNotes(payee.notes ?? '')
     setFormEmail(payee.email ?? '')
     setFormPhone(payee.phone ?? '')
@@ -329,7 +334,9 @@ export default function PayeesPage() {
     const terms = formTerms.trim() === '' ? null : Number(formTerms)
     const payload = {
       name: formName,
-      type: formType,
+      // Empty means the legal nature was not stated, which is a value, not a
+      // blank to be coerced into one.
+      type: formType || null,
       notes: formNotes || undefined,
       email: formEmail.trim() || null,
       phone: formPhone.trim() || null,
@@ -470,7 +477,6 @@ export default function PayeesPage() {
                     <DropdownMenuSubContent className="w-[180px] p-1 bg-card border border-border rounded-xl shadow-md">
                       {[
                         { value: '', label: t('payees.allTypes', 'All Types') },
-                        { value: 'merchant', label: t('payees.typeMerchant') },
                         { value: 'person', label: t('payees.typePerson') },
                         { value: 'company', label: t('payees.typeCompany') },
                       ].map((opt) => (
@@ -733,7 +739,9 @@ export default function PayeesPage() {
                     )}
                   </TableCell>
                   <TableCell className="hidden md:table-cell py-2.5">
-                    <span className="text-xs bg-muted text-muted-foreground px-2 py-0.5 rounded-full capitalize">{typeLabels[payee.type] ?? payee.type}</span>
+                    {payee.type && (
+                      <span className="text-xs bg-muted text-muted-foreground px-2 py-0.5 rounded-full capitalize">{typeLabels[payee.type]}</span>
+                    )}
                   </TableCell>
                   <TableCell className="py-2.5 text-right">
                     <span className="text-sm tabular-nums text-muted-foreground">{payee.transaction_count}</span>
@@ -797,9 +805,12 @@ export default function PayeesPage() {
               <select
                 className="w-full border border-border rounded-md px-3 py-2 text-sm bg-card focus:outline-none focus-visible:ring-ring/30 focus-visible:ring-[2px]"
                 value={formType}
-                onChange={(e) => setFormType(e.target.value)}
+                onChange={(e) => setFormType(e.target.value as FormType)}
               >
-                <option value="merchant">{t('payees.typeMerchant')}</option>
+                {/* Unset first, and it is the default: the legal nature
+                    only matters once a document is attached, and the
+                    document settles it anyway. */}
+                <option value="">{t('payees.typeUnset', 'Not specified')}</option>
                 <option value="person">{t('payees.typePerson')}</option>
                 <option value="company">{t('payees.typeCompany')}</option>
               </select>

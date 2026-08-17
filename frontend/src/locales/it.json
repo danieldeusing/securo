@@ -1272,7 +1272,6 @@
     "mergeTarget": "Unisci in",
     "selectTarget": "Seleziona beneficiario di destinazione...",
     "merged": "Beneficiari uniti ({{count}} transazioni riassegnate)",
-    "typeMerchant": "Esercente",
     "typePerson": "Persona",
     "typeCompany": "Azienda",
     "allTypes": "Tutti i tipi",
@@ -1282,7 +1281,8 @@
     "deleteTitle": "Elimina beneficiario",
     "deleteConfirm": "Sei sicuro di voler eliminare questo beneficiario? Questo lo rimuoverà anche da tutte le transazioni associate.",
     "deleteMultipleTitle": "Elimina beneficiari",
-    "deleteMultipleConfirm": "Sei sicuro di voler eliminare i {{count}} beneficiari selezionati? Questo li rimuoverà anche da tutte le transazioni associate."
+    "deleteMultipleConfirm": "Sei sicuro di voler eliminare i {{count}} beneficiari selezionati? Questo li rimuoverà anche da tutte le transazioni associate.",
+    "typeUnset": "Non specificato"
   },
   "fiscal": {
     "kind": {

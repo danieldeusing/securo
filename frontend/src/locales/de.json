@@ -1272,7 +1272,6 @@
     "mergeTarget": "Zusammenführen in",
     "selectTarget": "Ziel-Empfänger auswählen...",
     "merged": "Zahlungsempfänger zusammengeführt ({{count}} Transaktionen neu zugeordnet)",
-    "typeMerchant": "Händler",
     "typePerson": "Person",
     "typeCompany": "Unternehmen",
     "allTypes": "Alle Typen",
@@ -1282,7 +1281,8 @@
     "deleteTitle": "Zahlungsempfänger löschen",
     "deleteConfirm": "Möchten Sie diesen Zahlungsempfänger wirklich löschen? Dadurch wird der Zahlungsempfänger auch aus allen zugehörigen Transaktionen entfernt.",
     "deleteMultipleTitle": "Zahlungsempfänger löschen",
-    "deleteMultipleConfirm": "Möchten Sie die {{count}} ausgewählten Zahlungsempfänger wirklich löschen? Dadurch werden sie auch aus allen zugehörigen Transaktionen entfernt."
+    "deleteMultipleConfirm": "Möchten Sie die {{count}} ausgewählten Zahlungsempfänger wirklich löschen? Dadurch werden sie auch aus allen zugehörigen Transaktionen entfernt.",
+    "typeUnset": "Nicht angegeben"
   },
   "fiscal": {
     "kind": {
