@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Optional, cast
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -47,15 +47,13 @@ class Payee(Base):
     source: Mapped[str] = mapped_column(String(20), default="manual", nullable=False)
     is_favorite: Mapped[bool] = mapped_column(Boolean, default=False)
     notes: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
-    # Contact and billing details. All nullable and all expected to stay
+    # How to reach this counterparty. All nullable and all expected to stay
     # null for the overwhelming majority of rows: sync creates a payee for
     # every merchant a card touches, and none of them need an address.
     email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     phone: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     address: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
-    # How long this counterparty usually takes to pay, in days. Seeds the
-    # due date when an invoice is raised against them.
-    default_payment_terms_days: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    website: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     # Dynamically set by payee_service; not a DB column

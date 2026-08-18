@@ -6,10 +6,10 @@ Create Date: 2026-08-14
 
 Three additive changes, none of them requiring a backfill:
 
-  - Contact and billing columns on `payees`, all nullable. Sync creates a
-    payee for every merchant a card touches, and the overwhelming majority
-    keep every one of these null forever. That is the expected end state,
-    not an incomplete migration.
+  - Contact columns on `payees`, all nullable. Sync creates a payee for
+    every merchant a card touches, and the overwhelming majority keep every
+    one of these null forever. That is the expected end state, not an
+    incomplete migration.
   - `payee_tax_ids`, one row per fiscal document. Rows rather than columns
     because a counterparty legitimately has several (CNPJ plus state and
     municipal registrations in Brazil, Partita IVA plus Codice Fiscale plus
@@ -53,10 +53,7 @@ def upgrade() -> None:
     op.add_column("payees", sa.Column("email", sa.String(length=255), nullable=True))
     op.add_column("payees", sa.Column("phone", sa.String(length=50), nullable=True))
     op.add_column("payees", sa.Column("address", sa.String(length=500), nullable=True))
-    op.add_column(
-        "payees",
-        sa.Column("default_payment_terms_days", sa.Integer(), nullable=True),
-    )
+    op.add_column("payees", sa.Column("website", sa.String(length=255), nullable=True))
 
     op.add_column(
         "workspaces",
@@ -148,7 +145,7 @@ def downgrade() -> None:
     op.drop_index("ix_payee_tax_ids_payee_id", table_name="payee_tax_ids")
     op.drop_table("payee_tax_ids")
     op.drop_column("workspaces", "tax_jurisdiction")
-    op.drop_column("payees", "default_payment_terms_days")
+    op.drop_column("payees", "website")
     op.drop_column("payees", "address")
     op.drop_column("payees", "phone")
     op.drop_column("payees", "email")

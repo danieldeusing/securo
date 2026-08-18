@@ -48,7 +48,7 @@ class PayeeCreate(BaseModel):
     email: Optional[str] = Field(None, max_length=255)
     phone: Optional[str] = Field(None, max_length=50)
     address: Optional[str] = Field(None, max_length=500)
-    default_payment_terms_days: Optional[int] = Field(None, ge=0, le=365)
+    website: Optional[str] = Field(None, max_length=255)
     tax_ids: list[TaxIdInput] = []
 
 
@@ -60,7 +60,7 @@ class PayeeUpdate(BaseModel):
     email: Optional[str] = Field(None, max_length=255)
     phone: Optional[str] = Field(None, max_length=50)
     address: Optional[str] = Field(None, max_length=500)
-    default_payment_terms_days: Optional[int] = Field(None, ge=0, le=365)
+    website: Optional[str] = Field(None, max_length=255)
     # Absent leaves the documents alone. Present replaces the whole set, so
     # the caller sends what should remain rather than a diff.
     tax_ids: Optional[list[TaxIdInput]] = None
@@ -80,7 +80,7 @@ class PayeeRead(BaseModel):
     email: Optional[str] = None
     phone: Optional[str] = None
     address: Optional[str] = None
-    default_payment_terms_days: Optional[int] = None
+    website: Optional[str] = None
     tax_ids: list[TaxIdRead] = []
     created_at: datetime
     transaction_count: int = 0

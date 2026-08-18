@@ -1246,7 +1246,6 @@
     "email": "Email",
     "phone": "Phone",
     "address": "Address",
-    "paymentTerms": "Payment terms (days)",
     "taxIds": "Tax IDs",
     "addTaxId": "Add",
     "taxIdsEmpty": "None yet. Add one if you need it for tax purposes.",
@@ -1282,7 +1281,8 @@
     "deleteMultipleTitle": "Delete Payees",
     "deleteMultipleConfirm": "Are you sure you want to delete the {{count}} selected payees? This will also remove them from any associated transactions.",
     "deletedMultiple": "{{count}} payees deleted",
-    "typeUnset": "Not specified"
+    "typeUnset": "Not specified",
+    "website": "Website"
   },
   "fiscal": {
     "kind": {

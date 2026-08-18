@@ -717,7 +717,7 @@ export interface PayeeWritePayload {
   email?: string | null
   phone?: string | null
   address?: string | null
-  default_payment_terms_days?: number | null
+  website?: string | null
   is_favorite?: boolean
   /** Replaces the whole set. Omit to leave documents untouched. */
   tax_ids?: PayeeTaxId[]

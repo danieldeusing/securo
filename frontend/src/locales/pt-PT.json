@@ -1246,7 +1246,6 @@
     "email": "Email",
     "phone": "Telefone",
     "address": "Endereço",
-    "paymentTerms": "Prazo de pagamento (dias)",
     "taxIds": "Dados fiscais",
     "addTaxId": "Adicionar",
     "taxIdsEmpty": "Nenhum ainda. Adiciona se precisares para fins fiscais.",
@@ -1282,7 +1281,8 @@
     "deleteConfirm": "Tem a certeza que deseja eliminar esta entidade? Isto também a irá remover de quaisquer transações associadas.",
     "deleteMultipleTitle": "Eliminar entidades",
     "deleteMultipleConfirm": "Tem a certeza que deseja eliminar as {{count}} entidades selecionadas? Isto também as irá remover de quaisquer transações associadas.",
-    "typeUnset": "Não indicado"
+    "typeUnset": "Não indicado",
+    "website": "Site"
   },
   "fiscal": {
     "kind": {

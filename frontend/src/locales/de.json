@@ -1246,7 +1246,6 @@
     "email": "E-Mail",
     "phone": "Telefon",
     "address": "Adresse",
-    "paymentTerms": "Zahlungsziel (Tage)",
     "taxIds": "Steuerdaten",
     "addTaxId": "Hinzufügen",
     "taxIdsEmpty": "Noch keines. Füge eines hinzu, wenn du es für steuerliche Zwecke brauchst.",
@@ -1282,7 +1281,8 @@
     "deleteConfirm": "Möchten Sie diesen Zahlungsempfänger wirklich löschen? Dadurch wird der Zahlungsempfänger auch aus allen zugehörigen Transaktionen entfernt.",
     "deleteMultipleTitle": "Zahlungsempfänger löschen",
     "deleteMultipleConfirm": "Möchten Sie die {{count}} ausgewählten Zahlungsempfänger wirklich löschen? Dadurch werden sie auch aus allen zugehörigen Transaktionen entfernt.",
-    "typeUnset": "Nicht angegeben"
+    "typeUnset": "Nicht angegeben",
+    "website": "Website"
   },
   "fiscal": {
     "kind": {

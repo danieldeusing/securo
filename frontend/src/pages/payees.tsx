@@ -154,7 +154,7 @@ export default function PayeesPage() {
   const [formEmail, setFormEmail] = useState('')
   const [formPhone, setFormPhone] = useState('')
   const [formAddress, setFormAddress] = useState('')
-  const [formTerms, setFormTerms] = useState('')
+  const [formWebsite, setFormWebsite] = useState('')
   // Documents this payee has, as ordered rows. A list rather than a slot per
   // possible kind: most cadastros need one document, and a column of empty
   // boxes labelled with documents the user has never heard of reads as a
@@ -309,7 +309,7 @@ export default function PayeesPage() {
     setFormEmail('')
     setFormPhone('')
     setFormAddress('')
-    setFormTerms('')
+    setFormWebsite('')
     setTaxIdRows(seedTaxIdRows())
     setDialogOpen(true)
   }
@@ -322,7 +322,7 @@ export default function PayeesPage() {
     setFormEmail(payee.email ?? '')
     setFormPhone(payee.phone ?? '')
     setFormAddress(payee.address ?? '')
-    setFormTerms(payee.default_payment_terms_days?.toString() ?? '')
+    setFormWebsite(payee.website ?? '')
     // Every stored document becomes a row, including kinds this jurisdiction
     // does not ask for: a German VAT number on a Brazilian workspace is a
     // normal state, and hiding it would be worse than showing it.
@@ -331,7 +331,6 @@ export default function PayeesPage() {
   }
 
   const handleSave = () => {
-    const terms = formTerms.trim() === '' ? null : Number(formTerms)
     const payload = {
       name: formName,
       // Empty means the legal nature was not stated, which is a value, not a
@@ -341,7 +340,7 @@ export default function PayeesPage() {
       email: formEmail.trim() || null,
       phone: formPhone.trim() || null,
       address: formAddress.trim() || null,
-      default_payment_terms_days: Number.isFinite(terms as number) ? terms : null,
+      website: formWebsite.trim() || null,
       // An emptied field means "drop this document", so blanks are sent and
       // the server treats them as removals.
       tax_ids: taxIdRows
@@ -847,14 +846,11 @@ export default function PayeesPage() {
               <Input value={formAddress} onChange={(e) => setFormAddress(e.target.value)} />
             </div>
             <div className="space-y-2">
-              <Label>{t('payees.paymentTerms', 'Payment terms (days)')}</Label>
+              <Label>{t('payees.website', 'Website')}</Label>
               <Input
-                type="number"
-                min={0}
-                max={365}
-                value={formTerms}
-                onChange={(e) => setFormTerms(e.target.value)}
-                placeholder="30"
+                value={formWebsite}
+                onChange={(e) => setFormWebsite(e.target.value)}
+                placeholder="acme.com"
               />
             </div>
 

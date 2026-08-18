@@ -1246,7 +1246,6 @@
     "email": "Email",
     "phone": "Teléfono",
     "address": "Dirección",
-    "paymentTerms": "Plazo de pago (días)",
     "taxIds": "Datos fiscales",
     "addTaxId": "Añadir",
     "taxIdsEmpty": "Ninguno todavía. Añade uno si lo necesitas a efectos fiscales.",
@@ -1282,7 +1281,8 @@
     "deleteConfirm": "¿Estás seguro de que quieres eliminar este beneficiario? Esto también lo eliminará de cualquier transacción asociada.",
     "deleteMultipleTitle": "Eliminar beneficiarios",
     "deleteMultipleConfirm": "¿Estás seguro de que quieres eliminar los {{count}} beneficiarios seleccionados? Esto también los eliminará de cualquier transacción asociada.",
-    "typeUnset": "Sin especificar"
+    "typeUnset": "Sin especificar",
+    "website": "Sitio web"
   },
   "fiscal": {
     "kind": {

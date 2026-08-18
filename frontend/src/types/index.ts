@@ -396,7 +396,7 @@ export interface Payee {
   email: string | null
   phone: string | null
   address: string | null
-  default_payment_terms_days: number | null
+  website: string | null
   tax_ids: PayeeTaxId[]
   created_at: string
   transaction_count: number

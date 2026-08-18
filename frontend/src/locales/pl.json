@@ -1321,7 +1321,6 @@
     "email": "Email",
     "phone": "Telefon",
     "address": "Adres",
-    "paymentTerms": "Termin płatności (dni)",
     "taxIds": "Dane podatkowe",
     "addTaxId": "Dodaj",
     "taxIdsEmpty": "Jeszcze żadnego. Dodaj, jeśli potrzebujesz go do celów podatkowych.",
@@ -1363,7 +1362,8 @@
     "deleteConfirm": "Czy na pewno chcesz usunąć tego odbiorcę? Usunie to również odbiorcę ze wszystkich powiązanych transakcji.",
     "deleteMultipleTitle": "Usuń odbiorców",
     "deleteMultipleConfirm": "Czy na pewno chcesz usunąć {{count}} wybranych odbiorców? Usunie to ich również ze wszystkich powiązanych transakcji.",
-    "typeUnset": "Nie określono"
+    "typeUnset": "Nie określono",
+    "website": "Strona internetowa"
   },
   "fiscal": {
     "kind": {
