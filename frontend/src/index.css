@@ -1,76 +1,68 @@
-@import url('https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&display=swap');
+@import "@danieldeusing/design/fonts.css";
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
+/* The estate palette: every colour token, declared four times — one per
+   theme. No single hex clears WCAG AA on both the near-black and the
+   near-white themes, which is why these cannot be one set of values.
+   Imported AFTER tailwindcss so its :root wins over any default. */
+@import "@danieldeusing/design/tokens.css";
 
 @custom-variant dark (&:is(.dark *));
 
+/* ── WHAT THE DESIGN SYSTEM DOES NOT NAME ──────────────────────────────────
+   tokens.css owns background/foreground/card/popover/primary/secondary/muted/
+   accent/destructive/border/input/ring/radius, and Securo already uses those
+   exact shadcn names — so the app is reskinned by the import above and nothing
+   here repeats it.
+   What is left is the handful Securo has and the system does not: a foreground
+   for destructive, the chart series, and the sidebar. Each is declared per
+   theme for the same reason the system declares its own four times.
+   Chart series map to the system's STATUS accents rather than to invented
+   hues: those are the colours already measured against every surface on every
+   theme, so a chart cannot be the one place that fails contrast. */
 :root {
-  --background: #F8F9FB;
-  --foreground: #0F172A;
-  --card: #FFFFFF;
-  --card-foreground: #0F172A;
-  --popover: #FFFFFF;
-  --popover-foreground: #0F172A;
-  --primary: #6366F1;
-  --primary-foreground: #FFFFFF;
-  --secondary: #F1F5F9;
-  --secondary-foreground: #0F172A;
-  --muted: #F1F5F9;
-  --muted-foreground: #64748B;
-  --accent: #EEF2FF;
-  --accent-foreground: #4F46E5;
-  --destructive: #F43F5E;
-  --destructive-foreground: #FFFFFF;
-  --border: #E8ECF1;
-  --input: #E8ECF1;
-  --ring: #6366F1;
-  --radius: 0.625rem;
-  --chart-1: #6366F1;
-  --chart-2: #8B5CF6;
-  --chart-3: #10B981;
-  --chart-4: #F59E0B;
-  --chart-5: #F43F5E;
-  --sidebar: #FFFFFF;
-  --sidebar-foreground: #0F172A;
-  --sidebar-primary: #6366F1;
-  --sidebar-primary-foreground: #FFFFFF;
-  --sidebar-accent: #F1F5F9;
-  --sidebar-accent-foreground: #4F46E5;
-  --sidebar-border: #E8ECF1;
-  --sidebar-ring: #6366F1;
-  --sidebar-muted: #64748B;
+  --destructive-foreground: #f8f3e8;
+  --chart-1: #8a4516;  --chart-2: #1c5f9e;  --chart-3: #1a6b2e;
+  --chart-4: #845600;  --chart-5: #5f3dc4;
+  --sidebar: #efe7d4;                 --sidebar-foreground: #43352a;
+  --sidebar-primary: #8a4516;         --sidebar-primary-foreground: #f8f3e8;
+  --sidebar-accent: #ece3cf;          --sidebar-accent-foreground: #8a4516;
+  --sidebar-border: #d9cdb6;          --sidebar-ring: #8a4516;
+  --sidebar-muted: #71614e;
 }
 
-.dark {
-  --background: #0C0D12;
-  --foreground: #F0F0F5;
-  --card: #16171F;
-  --card-foreground: #F0F0F5;
-  --popover: #16171F;
-  --popover-foreground: #F0F0F5;
-  --primary: #818CF8;
-  --primary-foreground: #FFFFFF;
-  --secondary: #252836;
-  --secondary-foreground: #F0F0F5;
-  --muted: #252836;
-  --muted-foreground: #8A8F9E;
-  --accent: #1E1B4B;
-  --accent-foreground: #A5B4FC;
-  --destructive: #FB7185;
-  --destructive-foreground: #0C0D12;
-  --border: #2A2D3A;
-  --input: #2A2D3A;
-  --ring: #818CF8;
-  --sidebar: #16171F;
-  --sidebar-foreground: #F0F0F5;
-  --sidebar-primary: #818CF8;
-  --sidebar-primary-foreground: #FFFFFF;
-  --sidebar-accent: #252836;
-  --sidebar-accent-foreground: #A5B4FC;
-  --sidebar-border: #2A2D3A;
-  --sidebar-ring: #818CF8;
-  --sidebar-muted: #8A8F9E;
+html[data-theme="green"] {
+  --destructive-foreground: #02160a;
+  --chart-1: #33ff66;  --chart-2: #4dabf7;  --chart-3: #4ade80;
+  --chart-4: #f5b32b;  --chart-5: #b197fc;
+  --sidebar: #04110a;                 --sidebar-foreground: #4fdd7d;
+  --sidebar-primary: #33ff66;         --sidebar-primary-foreground: #02160a;
+  --sidebar-accent: #071509;          --sidebar-accent-foreground: #33ff66;
+  --sidebar-border: #1c4a2c;          --sidebar-ring: #33ff66;
+  --sidebar-muted: #3da45e;
+}
+
+html[data-theme="mono"] {
+  --destructive-foreground: #050505;
+  --chart-1: #ffffff;  --chart-2: #4dabf7;  --chart-3: #4ade80;
+  --chart-4: #f5b32b;  --chart-5: #b197fc;
+  --sidebar: #0d0d0d;                 --sidebar-foreground: #d4d4d4;
+  --sidebar-primary: #ffffff;         --sidebar-primary-foreground: #050505;
+  --sidebar-accent: #111111;          --sidebar-accent-foreground: #ffffff;
+  --sidebar-border: #333333;          --sidebar-ring: #ffffff;
+  --sidebar-muted: #8a8a8a;
+}
+
+html[data-theme="paper"] {
+  --destructive-foreground: #fafafa;
+  --chart-1: #000000;  --chart-2: #1c5f9e;  --chart-3: #1a7031;
+  --chart-4: #8f5d00;  --chart-5: #5f3dc4;
+  --sidebar: #f1f1f1;                 --sidebar-foreground: #1f1f1f;
+  --sidebar-primary: #000000;         --sidebar-primary-foreground: #fafafa;
+  --sidebar-accent: #efefef;          --sidebar-accent-foreground: #000000;
+  --sidebar-border: #d4d4d4;          --sidebar-ring: #000000;
+  --sidebar-muted: #595959;
 }
 
 @theme inline {
@@ -121,13 +113,14 @@
   }
   body {
     @apply bg-background text-foreground;
-    font-family: 'Geist', 'Inter', system-ui, -apple-system, sans-serif;
-    font-feature-settings: "cv02","cv03","cv04","cv11";
+    font-family: var(--font-mono);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }
+  /* The estate's type is monospaced and not tightened — negative tracking
+     on a mono face fights the grid the face exists to keep. */
   h1, h2, h3 {
-    letter-spacing: -0.035em;
+    letter-spacing: 0;
   }
 }
 
