@@ -25,9 +25,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.bank_connection import BankConnection
 from app.models.payee import Payee
 from app.models.workspace import Workspace, WorkspaceMember
-from app.providers.base import AccountData, TransactionData
+from app.providers.base import AccountData, ConnectionData, TransactionData
 from app.schemas.payee import PayeeCreate
-from app.services.connection_service import sync_connection
+from app.services.connection_service import handle_oauth_callback, sync_connection
 from app.services.payee_service import create_payee, get_or_create_payee
 
 
@@ -203,6 +203,54 @@ async def test_connecting_a_bank_succeeds_with_the_name_already_used_elsewhere(
         )
 
     assert result_conn.status == "active"
+    synced = await session.scalar(
+        select(Payee).where(Payee.workspace_id == other.id, Payee.name == COUNTERPARTY)
+    )
+    assert synced is not None
+
+
+@pytest.mark.asyncio
+async def test_connecting_the_bank_succeeds_on_the_callback_itself(
+    session: AsyncSession, test_user, test_workspace
+):
+    """The endpoint the report died on: `POST /api/connections/oauth/callback`
+    imports the first batch of transactions inline, so the connection is
+    what fails, not a later sync. Same counterparty, already recorded in
+    another workspace."""
+    other = await _second_workspace(session, test_user.id)
+    await create_payee(
+        session, test_workspace.id, test_user.id, PayeeCreate(name=COUNTERPARTY)
+    )
+
+    mock_provider = AsyncMock()
+    mock_provider.handle_oauth_callback = AsyncMock(return_value=ConnectionData(
+        external_id="ext-bb",
+        institution_name="Banco do Brasil",
+        credentials={"token": "x"},
+        accounts=[
+            AccountData(
+                external_id="bb-acc-1", name="Conta Corrente",
+                type="checking", balance=Decimal("100"), currency="BRL",
+            ),
+        ],
+    ))
+    mock_provider.get_transactions = AsyncMock(return_value=[
+        TransactionData(
+            external_id="bb-tx-1", description="PIX ENVIADO",
+            amount=Decimal("50"), date=date.today(), type="debit",
+            currency="BRL", payee=COUNTERPARTY,
+        ),
+    ])
+
+    with patch("app.services.connection_service.get_provider", return_value=mock_provider), \
+         patch("app.services.connection_service.detect_transfer_pairs", new_callable=AsyncMock), \
+         patch("app.services.connection_service.stamp_primary_amount", new_callable=AsyncMock), \
+         patch("app.services.connection_service.apply_rules_to_transaction", new_callable=AsyncMock):
+        connection = await handle_oauth_callback(
+            session, other.id, test_user.id, "code", "pluggy", sync_assets=False,
+        )
+
+    assert connection is not None
     synced = await session.scalar(
         select(Payee).where(Payee.workspace_id == other.id, Payee.name == COUNTERPARTY)
     )
