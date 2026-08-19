@@ -697,7 +697,7 @@ class TestSyncRates:
         mock_session.execute = AsyncMock()
         mock_session.commit = AsyncMock()
 
-        with patch("app.services.fx_rate_service._provider", mock_provider):
+        with patch("app.services.fx_rate_service._get_provider", return_value=mock_provider):
             count = await sync_rates(mock_session, date.today())
 
         mock_provider.fetch_latest.assert_awaited_once()
@@ -720,7 +720,7 @@ class TestSyncRates:
         mock_session.execute = AsyncMock()
         mock_session.commit = AsyncMock()
 
-        with patch("app.services.fx_rate_service._provider", mock_provider):
+        with patch("app.services.fx_rate_service._get_provider", return_value=mock_provider):
             count = await sync_rates(mock_session, target)
 
         mock_provider.fetch_historical.assert_awaited_once_with(target)
@@ -738,7 +738,7 @@ class TestSyncRates:
         mock_session.execute = AsyncMock()
         mock_session.commit = AsyncMock()
 
-        with patch("app.services.fx_rate_service._provider", mock_provider):
+        with patch("app.services.fx_rate_service._get_provider", return_value=mock_provider):
             await sync_rates(mock_session)
 
         # Should call fetch_latest (not fetch_historical) when no date given
@@ -757,7 +757,7 @@ class TestSyncRates:
         mock_session.execute = AsyncMock()
         mock_session.commit = AsyncMock()
 
-        with patch("app.services.fx_rate_service._provider", mock_provider):
+        with patch("app.services.fx_rate_service._get_provider", return_value=mock_provider):
             await sync_rates(mock_session, date.today() + timedelta(days=10))
 
         mock_provider.fetch_latest.assert_awaited_once()

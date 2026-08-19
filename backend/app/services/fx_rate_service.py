@@ -11,11 +11,36 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from app.core.config import get_settings
 from app.models.fx_rate import FxRate
 from app.models.user import User
+from app.providers.base import FxRateProvider
+from app.providers.ecb import EcbProvider
 from app.providers.openexchangerates import OpenExchangeRatesProvider
 
 logger = logging.getLogger(__name__)
 
-_provider = OpenExchangeRatesProvider()
+_PROVIDERS: dict[str, type[FxRateProvider]] = {
+    "ecb": EcbProvider,
+    "openexchangerates": OpenExchangeRatesProvider,
+}
+
+
+def _get_provider() -> FxRateProvider:
+    """The configured rate source. -> FxRateProvider
+
+    Resolved per call rather than at import, so a settings change takes effect
+    on the next sync instead of the next restart — and so the tests can swap it
+    without reloading the module.
+
+    An unknown name is refused rather than defaulted. Falling back silently
+    would sync rates from a source nobody chose and stamp them with its name,
+    which is the kind of wrong that only surfaces months later in a figure
+    somebody is trying to reconcile.
+    """
+    configured = get_settings().fx_provider
+    if configured not in _PROVIDERS:
+        raise ValueError(
+            f"fx_provider is {configured!r}; expected one of {', '.join(sorted(_PROVIDERS))}"
+        )
+    return _PROVIDERS[configured]()
 
 
 async def sync_rates(
@@ -34,10 +59,11 @@ async def sync_rates(
     target = min(requested_target, date.today())
     supported = set(get_settings().supported_currencies.split(","))
 
+    provider = _get_provider()
     if target == date.today():
-        rates = await _provider.fetch_latest()
+        rates = await provider.fetch_latest()
     else:
-        rates = await _provider.fetch_historical(target)
+        rates = await provider.fetch_historical(target)
 
     count = 0
     for currency_code, rate in rates.items():
@@ -48,11 +74,11 @@ async def sync_rates(
             quote_currency=currency_code,
             date=target,
             rate=rate,
-            source=_provider.name,
+            source=provider.name,
         )
         stmt = stmt.on_conflict_do_update(
             constraint="uq_fx_rate_base_quote_date",
-            set_={"rate": rate, "source": _provider.name},
+            set_={"rate": rate, "source": provider.name},
         )
         await session.execute(stmt)
         count += 1

@@ -1,7 +1,7 @@
 import uuid
 from datetime import date
 from decimal import Decimal
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,6 +18,20 @@ from app.services.import_service import (
     parse_camt,
     import_transactions,
 )
+
+
+def _provider_stub():
+    """A mock that returns ITSELF when called.
+
+    These tests were written against a module-level provider instance and both
+    configure and assert on the object they are handed. The provider is now
+    resolved per call, so the seam is a function — and it has to hand back the
+    very object the test holds, or the assertions watch a different mock than
+    the code under test actually uses, and pass while proving nothing.
+    """
+    stub = MagicMock()
+    stub.return_value = stub
+    return stub
 
 
 class TestParseCsv:
@@ -1287,7 +1301,7 @@ class TestImportTransactionsFx:
     """
 
     @pytest.mark.asyncio
-    @patch("app.services.fx_rate_service._provider")
+    @patch("app.services.fx_rate_service._get_provider", new_callable=_provider_stub)
     async def test_import_with_fx_rate_from_csv(self, mock_provider, session: AsyncSession, test_user: User, test_workspace, test_account: Account):
         """When CSV provides fx_rate, it should be used directly without calling FX service."""
         from app.schemas.transaction import TransactionImport
@@ -1383,7 +1397,7 @@ class TestImportTransactionsFx:
         assert tx.description_is_rule_managed is False
 
     @pytest.mark.asyncio
-    @patch("app.services.fx_rate_service._provider")
+    @patch("app.services.fx_rate_service._get_provider", new_callable=_provider_stub)
     async def test_import_foreign_currency_without_fx_rate_auto_converts(
         self, mock_provider, session: AsyncSession, test_user: User, test_workspace, test_account: Account,
     ):
@@ -1427,7 +1441,7 @@ class TestImportTransactionsFx:
         assert float(tx.amount_primary) > 500  # 100 EUR * ~5.43 = ~543
 
     @pytest.mark.asyncio
-    @patch("app.services.fx_rate_service._provider")
+    @patch("app.services.fx_rate_service._get_provider", new_callable=_provider_stub)
     async def test_import_uses_account_currency_as_default(
         self, mock_provider, session: AsyncSession, test_user: User, test_workspace,
     ):
@@ -1479,7 +1493,7 @@ class TestImportTransactionsFx:
         assert tx.currency == "USD"
 
     @pytest.mark.asyncio
-    @patch("app.services.fx_rate_service._provider")
+    @patch("app.services.fx_rate_service._get_provider", new_callable=_provider_stub)
     async def test_import_brl_into_brl_account_no_fx(
         self, mock_provider, session: AsyncSession, test_user: User, test_workspace, test_account: Account,
     ):
@@ -1517,7 +1531,7 @@ class TestImportTransactionsFx:
         mock_provider.fetch_historical.assert_not_called()
 
     @pytest.mark.asyncio
-    @patch("app.services.fx_rate_service._provider")
+    @patch("app.services.fx_rate_service._get_provider", new_callable=_provider_stub)
     async def test_import_csv_currency_overrides_account_currency(
         self, mock_provider, session: AsyncSession, test_user: User, test_workspace, test_account: Account,
     ):
@@ -1687,7 +1701,7 @@ class TestImportTransactionsWithCategory:
     """Tests for category_name → category_id resolution in import_transactions."""
 
     @pytest.mark.asyncio
-    @patch("app.services.fx_rate_service._provider")
+    @patch("app.services.fx_rate_service._get_provider", new_callable=_provider_stub)
     async def test_known_category_name_resolved_to_id(
         self, mock_provider, session: AsyncSession, test_user: User, test_workspace, test_account: Account,
     ):
@@ -1725,7 +1739,7 @@ class TestImportTransactionsWithCategory:
         assert tx.category_id == category.id
 
     @pytest.mark.asyncio
-    @patch("app.services.fx_rate_service._provider")
+    @patch("app.services.fx_rate_service._get_provider", new_callable=_provider_stub)
     async def test_unknown_category_name_leaves_uncategorized(
         self, mock_provider, session: AsyncSession, test_user: User, test_workspace, test_account: Account,
     ):
@@ -1754,7 +1768,7 @@ class TestImportTransactionsWithCategory:
         assert tx.category_id is None
 
     @pytest.mark.asyncio
-    @patch("app.services.fx_rate_service._provider")
+    @patch("app.services.fx_rate_service._get_provider", new_callable=_provider_stub)
     async def test_no_category_name_leaves_uncategorized(
         self, mock_provider, session: AsyncSession, test_user: User, test_workspace, test_account: Account,
     ):
@@ -1782,7 +1796,7 @@ class TestImportTransactionsWithCategory:
         assert tx.category_id is None
 
     @pytest.mark.asyncio
-    @patch("app.services.fx_rate_service._provider")
+    @patch("app.services.fx_rate_service._get_provider", new_callable=_provider_stub)
     async def test_multiple_categories_resolved_correctly(
         self, mock_provider, session: AsyncSession, test_user: User, test_workspace, test_account: Account,
     ):
@@ -1850,7 +1864,7 @@ class TestImportTransactionsWithCategory:
         assert unknown_tx.category_id is None
 
     @pytest.mark.asyncio
-    @patch("app.services.fx_rate_service._provider")
+    @patch("app.services.fx_rate_service._get_provider", new_callable=_provider_stub)
     async def test_end_to_end_parse_and_import_with_type_and_category(
         self, mock_provider, session: AsyncSession, test_user: User, test_workspace, test_account: Account,
     ):
@@ -2393,7 +2407,7 @@ class TestForceUncategorized:
 
 
 @pytest.mark.asyncio
-@patch("app.services.fx_rate_service._provider")
+@patch("app.services.fx_rate_service._get_provider", new_callable=_provider_stub)
 async def test_import_tolerates_duplicate_external_id_rows(
     mock_provider, session: AsyncSession, test_user: User, test_workspace, test_account: Account,
 ):

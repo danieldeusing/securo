@@ -3,7 +3,7 @@ import uuid
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import AsyncGenerator
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 # --- Agents test setup (must run BEFORE app.main is imported) ---------------
 # Force the optional agents feature on for the test process so the routes
@@ -570,11 +570,18 @@ def _mock_redis():
 
 @pytest.fixture(autouse=True)
 def _no_external_fx_sync():
-    """Prevent tests from hitting the real OpenExchangeRates API."""
-    with patch("app.services.fx_rate_service._provider") as mock_provider:
-        mock_provider.name = "test"
-        mock_provider.fetch_latest = AsyncMock(return_value={})
-        mock_provider.fetch_historical = AsyncMock(return_value={})
+    """Prevent tests from hitting a real FX rate API.
+
+    Patches the resolver rather than a module-level instance: which provider is
+    in use is a setting now, read per sync, so there is no single object left to
+    stand in for. Stubbing `_get_provider` blocks every source at once, which is
+    what this fixture is actually for.
+    """
+    mock_provider = MagicMock()
+    mock_provider.name = "test"
+    mock_provider.fetch_latest = AsyncMock(return_value={})
+    mock_provider.fetch_historical = AsyncMock(return_value={})
+    with patch("app.services.fx_rate_service._get_provider", return_value=mock_provider):
         yield
 
 

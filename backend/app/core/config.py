@@ -64,6 +64,14 @@ class Settings(BaseSettings):
     default_currency: str = "USD"  # fallback currency when user preference is unavailable
 
     # FX Rates
+    # "ecb" needs no account and no key — the European Central Bank's daily euro
+    # reference rates, which is also the rate European banks and tax authorities
+    # quote. It is the default so a fresh install converts currencies out of the
+    # box: with no rate table at all the app adds euros to reais as though they
+    # were the same unit, and the total looks entirely plausible.
+    # "openexchangerates" reaches currencies the ECB does not publish, and needs
+    # openexchangerates_app_id set.
+    fx_provider: str = "ecb"  # "ecb" or "openexchangerates"
     openexchangerates_app_id: str = ""
     supported_currencies: str = "USD,EUR,GBP,BRL,CAD,AUD,CHF,ARS,JPY,MXN,INR,SEK,DKK,NOK,PLN,CZK,HUF,RON,CRC,IDR,COP,CLP,DOP,RUB,GTQ,PHP,UAH,NZD"  # comma-separated list
     fx_sync_mode: str = "on_demand"  # "on_demand" or "scheduled"
