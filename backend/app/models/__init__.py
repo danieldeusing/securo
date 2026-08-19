@@ -10,6 +10,7 @@ from app.models.rule import Rule
 from app.models.recurring_transaction import RecurringTransaction
 from app.models.budget import Budget
 from app.models.import_log import ImportLog
+from app.models.balance_assertion import BalanceAssertion
 from app.models.asset import Asset
 from app.models.asset_group import AssetGroup
 from app.models.asset_transaction import AssetTransaction
@@ -56,6 +57,7 @@ __all__ = [
     "AppSetting",
     "Goal",
     "CreditCardBill",
+    "BalanceAssertion",
     "Group",
     "GroupMember",
     "TransactionSplit",
