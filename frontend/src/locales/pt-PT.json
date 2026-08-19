@@ -1497,12 +1497,7 @@
     "theme": "Tema",
     "currency": "Moeda",
     "name": "O teu nome",
-    "namePlaceholder": "Como devemos te chamar?",
-    "brandTagline": "Seja dono das tuas finanças.",
-    "brandSubtitle": "Finanças pessoais self-hosted, com o controlo do teu lado. O teu dinheiro, os teus dados, as tuas regras.",
-    "brandOpen": "Código aberto",
-    "brandSelfHosted": "Self-hosted",
-    "brandPrivate": "Privado por padrão"
+    "namePlaceholder": "Como devemos te chamar?"
   },
   "backup": {
     "button": "Backup",

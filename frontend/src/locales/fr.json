@@ -1497,12 +1497,7 @@
     "theme": "Thème",
     "currency": "Devise",
     "name": "Votre nom",
-    "namePlaceholder": "Comment devons-nous vous appeler ?",
-    "brandTagline": "Maîtrisez vos finances.",
-    "brandSubtitle": "Une gestion de finances personnelles auto-hébergée qui vous garde aux commandes. Votre argent, vos données, vos règles.",
-    "brandOpen": "Open source",
-    "brandSelfHosted": "Auto-hébergé",
-    "brandPrivate": "Confidentiel par conception"
+    "namePlaceholder": "Comment devons-nous vous appeler ?"
   },
   "backup": {
     "button": "Sauvegarde",

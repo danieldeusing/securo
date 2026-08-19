@@ -1497,12 +1497,7 @@
     "theme": "Design",
     "currency": "Währung",
     "name": "Dein Name",
-    "namePlaceholder": "Wie sollen wir dich nennen?",
-    "brandTagline": "Übernimm die Kontrolle über deine Finanzen.",
-    "brandSubtitle": "Selbstgehostete persönliche Finanzen unter deiner Kontrolle. Dein Geld, deine Daten, deine Regeln.",
-    "brandOpen": "Open Source",
-    "brandSelfHosted": "Selbstgehostet",
-    "brandPrivate": "Privatsphäre standardmäßig"
+    "namePlaceholder": "Wie sollen wir dich nennen?"
   },
   "backup": {
     "button": "Backup",

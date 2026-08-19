@@ -1497,12 +1497,7 @@
     "theme": "Tema",
     "currency": "Valuta",
     "name": "Il tuo nome",
-    "namePlaceholder": "Come dobbiamo chiamarti?",
-    "brandTagline": "Gestisci le tue finanze.",
-    "brandSubtitle": "Gestione finanziaria personale self-hosted che ti mantiene al comando. I tuoi soldi, i tuoi dati, le tue regole.",
-    "brandOpen": "Open source",
-    "brandSelfHosted": "Self-hosted",
-    "brandPrivate": "Privato per progettazione"
+    "namePlaceholder": "Come dobbiamo chiamarti?"
   },
   "backup": {
     "button": "Backup",

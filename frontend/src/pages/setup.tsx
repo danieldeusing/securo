@@ -17,7 +17,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { AuthBrandPanel } from '@/components/auth-brand-panel'
 import { cn } from '@/lib/utils'
 import { Sun, Moon, Globe } from 'lucide-react'
 import { ShellLogo } from '@/components/shell-logo'
@@ -84,13 +83,12 @@ export default function SetupPage() {
   }
 
   return (
-    <div className="min-h-screen lg:grid lg:grid-cols-2">
-      <AuthBrandPanel />
+    <div className="min-h-screen">
       <div className="flex min-h-screen items-center justify-center bg-background px-4 py-10">
       <Card className="w-full max-w-[400px] border-border/60 shadow-sm">
         <form onSubmit={handleSubmit}>
           <div className="flex flex-col items-center pt-8 pb-2 px-8">
-            <div className="w-11 h-11 rounded-xl bg-primary/10 flex items-center justify-center mb-4 lg:hidden">
+            <div className="w-11 h-11 bg-primary/10 flex items-center justify-center mb-4">
               <ShellLogo size={22} className="text-primary" />
             </div>
             <h1 className="text-xl font-semibold tracking-tight">{t('setup.title')}</h1>

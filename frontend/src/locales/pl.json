@@ -1587,12 +1587,7 @@
     "theme": "Motyw",
     "currency": "Waluta",
     "name": "Twoje imię",
-    "namePlaceholder": "Jak mamy się do Ciebie zwracać?",
-    "brandTagline": "Przejmij kontrolę nad finansami.",
-    "brandSubtitle": "Samodzielnie hostowane finanse osobiste, które dają Ci kontrolę. Twoje pieniądze, Twoje dane, Twoje zasady.",
-    "brandOpen": "Open source",
-    "brandSelfHosted": "Samodzielnie hostowane",
-    "brandPrivate": "Prywatne z założenia"
+    "namePlaceholder": "Jak mamy się do Ciebie zwracać?"
   },
   "backup": {
     "button": "Kopia zapasowa",
