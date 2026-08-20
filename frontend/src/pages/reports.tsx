@@ -381,8 +381,21 @@ export default function ReportsPage() {
         value: c.value,
         color: activeTab === 'net_worth' ? (netWorthColorMap.get(c.key) ?? OTHER_SLICE_COLOR) : c.color,
         group: c.group,
+        // The backend sends every slice as a magnitude, because an arc cannot
+        // be negative, and tags the group instead. A net-worth composition mixes
+        // both groups in one ring, so without this a debt reads as a holding: a
+        // -14.580 EUR câmbio leg showed as "14.580,00 € (28.7%)" of what the
+        // household owns, and the ring implied 50.874 where 21.714 was held.
+        negative: activeTab === 'net_worth' && NEGATIVE_SERIES.has(c.group),
       }))
   })()
+
+  // Shares are of what is HELD, so the assets sum to 100% and a liability reads
+  // as a deduction against them rather than a share of them. Dividing by the
+  // mixed total would make every asset's share shrink as debt grew.
+  const compositionPositiveTotal = compositionDetail
+    .filter((d) => !d.negative)
+    .reduce((sum, d) => sum + d.value, 0)
 
   // Outer ring — items above 3 % of total get their own slice; everything else
   // per group folds into one "Other <Group>" slice. Outer arcs are anchored to
@@ -1130,7 +1143,9 @@ export default function ReportsPage() {
                                     </p>
                                     <div className="flex flex-col gap-1.5 max-h-72 overflow-y-auto pr-2">
                                       {compositionDetail.map((d, i) => {
-                                        const pct = donutTotal > 0 ? ((d.value / donutTotal) * 100).toFixed(1) : '0'
+                                        const pct = d.negative || compositionPositiveTotal <= 0
+                                          ? null
+                                          : ((d.value / compositionPositiveTotal) * 100).toFixed(1)
                                         return (
                                           <div key={`${i}-${d.name}`} className="flex items-center gap-2">
                                             <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: d.color }} />
@@ -1138,7 +1153,10 @@ export default function ReportsPage() {
                                               {d.name.length > 25 ? d.name.slice(0, 22) + '…' : d.name}
                                             </span>
                                             <span className="text-xs text-muted-foreground shrink-0">
-                                              {privacyMode ? MASK : `${formatCurrency(d.value, userCurrency, locale)} (${pct}%)`}
+                                              {privacyMode ? MASK
+                                                : pct === null
+                                                  ? formatCurrency(-d.value, userCurrency, locale)
+                                                  : `${formatCurrency(d.value, userCurrency, locale)} (${pct}%)`}
                                             </span>
                                           </div>
                                         )
