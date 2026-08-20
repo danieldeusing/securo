@@ -12,6 +12,7 @@ authorization URL can be generated, so `get_oauth_url` takes
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import time
 from datetime import date, datetime, timedelta, timezone
@@ -24,6 +25,7 @@ from jose import jwt
 
 from app.agents.services.crypto import decrypt, encrypt
 from app.core.config import get_settings
+from app.core.redis import get_redis
 from app.providers.base import (
     AccountData,
     BankProvider,
@@ -50,6 +52,25 @@ DEFAULT_VALID_UNTIL_DAYS = MAX_VALID_UNTIL_DAYS
 DEFAULT_PSU_TYPE = "personal"
 DEFAULT_HISTORY_DAYS = 90
 TRANSACTION_PAGE_LIMIT = 50  # safety cap
+
+# `/aspsps` is slow, and its latency varies wildly: measured on the same host
+# minutes apart, country=DE took 23.9s and then 50.4s (1109 institutions,
+# 2.1 MiB), while the unfiltered list (2664 institutions, 3.0 MiB) died with a
+# ReadTimeout after 167s. The connect dialog calls it unfiltered FIRST, because
+# the country list is derived from the institutions themselves, so against the
+# shared 30s client timeout that opening call could never succeed — the dialog
+# only ever said "Failed to load banks".
+#
+# Raising the timeout alone does not fix it: at 50s a success is luck. But this
+# is a browse of a directory that changes a few times a year, so it is cached,
+# and a failed refresh falls back to the last good copy rather than blanking a
+# dialog somebody is standing in front of.
+ASPSP_CACHE_PREFIX = "eb_aspsps:"
+ASPSP_STALE_PREFIX = "eb_aspsps_stale:"
+ASPSP_CACHE_TTL_SECONDS = 7 * 24 * 3600
+# Generous because once warm this is off the interactive path, and a slow
+# answer beats a dialog that cannot list a single bank.
+ASPSP_TIMEOUT_SECONDS = 180.0
 
 
 def _map_cash_account_type(eb_type: Optional[str]) -> str:
@@ -266,9 +287,15 @@ class EnableBankingProvider(BankProvider):
         *,
         params: Optional[dict] = None,
         json_body: Optional[dict] = None,
+        timeout: Optional[float] = None,
     ) -> dict:
+        # Omitted rather than passed as None: httpx reads an explicit
+        # timeout=None as "wait forever", not "use the client default".
+        overrides = {} if timeout is None else {"timeout": timeout}
         async with self._client() as client:
-            resp = await client.request(method, path, params=params, json=json_body)
+            resp = await client.request(
+                method, path, params=params, json=json_body, **overrides
+            )
         if resp.status_code in (401, 410):
             raise SessionExpiredError(
                 f"Enable Banking returned {resp.status_code} for {path}"
@@ -290,14 +317,49 @@ class EnableBankingProvider(BankProvider):
 
     # ----- institution listing -----
 
+    async def _fetch_aspsps(self, country: Optional[str]) -> list[dict]:
+        """The `/aspsps` list, from cache when we have it.
+
+        Cache miss goes upstream with a long timeout; a failure there serves the
+        last good copy if one exists. Only a first-ever fetch can leave the
+        caller with nothing, and that is the one case where there is genuinely
+        nothing to show.
+        """
+        key = (country or "ALL").upper()
+        redis = await get_redis()
+
+        cached = await redis.get(f"{ASPSP_CACHE_PREFIX}{key}")
+        if cached is not None:
+            return json.loads(cached)
+
+        params: dict[str, Any] = {"country": key} if country else {}
+        try:
+            data = await self._request(
+                "GET", "/aspsps", params=params or None,
+                timeout=ASPSP_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:
+            stale = await redis.get(f"{ASPSP_STALE_PREFIX}{key}")
+            if stale is None:
+                raise
+            logger.warning(
+                "Enable Banking /aspsps (%s) failed (%s); serving the cached copy",
+                key, exc,
+            )
+            return json.loads(stale)
+
+        raw_list = data.get("aspsps") or []
+        body = json.dumps(raw_list)
+        await redis.set(f"{ASPSP_CACHE_PREFIX}{key}", body, ex=ASPSP_CACHE_TTL_SECONDS)
+        # Deliberately no TTL: this is the fallback for the day the refresh
+        # fails, so it has to outlive the fresh copy it backs up.
+        await redis.set(f"{ASPSP_STALE_PREFIX}{key}", body)
+        return raw_list
+
     async def list_institutions(
         self, country: Optional[str] = None
     ) -> InstitutionListData:
-        params: dict[str, Any] = {}
-        if country:
-            params["country"] = country.upper()
-        data = await self._request("GET", "/aspsps", params=params or None)
-        raw_list = data.get("aspsps") or []
+        raw_list = await self._fetch_aspsps(country)
         institutions: list[InstitutionData] = []
         countries: set[str] = set()
         for item in raw_list:

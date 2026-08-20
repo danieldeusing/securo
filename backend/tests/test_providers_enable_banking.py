@@ -130,6 +130,30 @@ def test_txn_fingerprint_differs_on_amount_change():
     assert _txn_fingerprint("acc", base) != _txn_fingerprint("acc", other)
 
 
+class _FakeRedis:
+    """Enough of the redis surface for the /aspsps cache: get and set-with-TTL."""
+
+    def __init__(self):
+        self.store: dict[str, str] = {}
+
+    async def get(self, key):
+        return self.store.get(key)
+
+    async def set(self, key, value, ex=None):
+        self.store[key] = value
+
+
+@pytest.fixture
+def fake_redis(monkeypatch):
+    fake = _FakeRedis()
+
+    async def _get_redis():
+        return fake
+
+    monkeypatch.setattr("app.providers.enable_banking.get_redis", _get_redis)
+    return fake
+
+
 # ----- HTTP-driven parsing via httpx.MockTransport -----
 
 
@@ -152,7 +176,7 @@ def _patch_client(provider: EnableBankingProvider, handler):
 
 
 @pytest.mark.asyncio
-async def test_list_institutions_maps_and_dedupes_countries(eb_keys):
+async def test_list_institutions_maps_and_dedupes_countries(eb_keys, fake_redis):
     provider = EnableBankingProvider()
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -185,6 +209,64 @@ async def test_list_institutions_maps_and_dedupes_countries(eb_keys):
     revolut = next(i for i in data.institutions if i.name == "Revolut")
     assert revolut.max_consent_days == 180
     assert revolut.psu_types == ["personal"]
+
+
+def _counting_aspsps_handler(calls: list, payload: list[dict]):
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        return httpx.Response(200, json={"aspsps": payload})
+
+    return handler
+
+
+@pytest.mark.asyncio
+async def test_second_listing_is_served_from_cache(eb_keys, fake_redis):
+    """The dialog reopening must not re-pay a call measured at 24-50 seconds."""
+    provider = EnableBankingProvider()
+    calls: list = []
+    handler = _counting_aspsps_handler(calls, [{"name": "Sparkasse", "country": "DE"}])
+
+    with _patch_client(provider, handler):
+        first = await provider.list_institutions("DE")
+        second = await provider.list_institutions("DE")
+
+    assert len(calls) == 1
+    assert [i.name for i in first.institutions] == [i.name for i in second.institutions]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_refresh_serves_the_last_good_copy(eb_keys, fake_redis):
+    """A slow upstream must not empty a dialog we have already filled once."""
+    provider = EnableBankingProvider()
+    calls: list = []
+    handler = _counting_aspsps_handler(calls, [{"name": "Sparkasse", "country": "DE"}])
+
+    with _patch_client(provider, handler):
+        await provider.list_institutions("DE")
+
+    # Expire the fresh copy the way the TTL would, leaving only the stale one.
+    del fake_redis.store["eb_aspsps:DE"]
+
+    def failing(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("upstream took 167s", request=request)
+
+    with _patch_client(provider, failing):
+        recovered = await provider.list_institutions("DE")
+
+    assert [i.name for i in recovered.institutions] == ["Sparkasse"]
+
+
+@pytest.mark.asyncio
+async def test_a_first_ever_failure_still_raises(eb_keys, fake_redis):
+    """With nothing cached there is nothing to show, and saying so beats an empty list."""
+    provider = EnableBankingProvider()
+
+    def failing(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("upstream took 167s", request=request)
+
+    with _patch_client(provider, failing):
+        with pytest.raises(httpx.ReadTimeout):
+            await provider.list_institutions("DE")
 
 
 @pytest.mark.asyncio
