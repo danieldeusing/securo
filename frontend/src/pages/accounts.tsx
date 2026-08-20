@@ -37,6 +37,7 @@ import { ConnectionSettingsDialog } from '@/components/connection-settings-dialo
 import { usePrivacyMode } from '@/hooks/use-privacy-mode'
 import { useAuth } from '@/contexts/auth-context'
 import { useWorkspace } from '@/contexts/workspace-context'
+import { useCollectionFilter } from '@/contexts/collection-filter-context'
 import { formatCurrency } from '@/lib/format'
 
 // Account types offered in the create/edit dialog. Shared between the manual
@@ -66,6 +67,7 @@ export default function AccountsPage() {
   const { mask } = usePrivacyMode()
   const { user } = useAuth()
   const { canWrite } = useWorkspace()
+  const { activeAccountIds } = useCollectionFilter()
   const userCurrency = user?.preferences?.currency_display ?? 'USD'
   const queryClient = useQueryClient()
   const [dialogOpen, setDialogOpen] = useState(false)
@@ -127,7 +129,9 @@ export default function AccountsPage() {
     queryKey: ['accounts', 'closed'],
     queryFn: () => accounts.list(true),
   })
-  const closedAccounts = closedAccountsList?.filter((a) => a.is_closed) ?? []
+  const closedAccounts = closedAccountsList?.filter(
+    (a) => a.is_closed && (!activeAccountIds || activeAccountIds.includes(a.id))
+  ) ?? []
 
   const syncMutation = useMutation({
     mutationFn: (id: string) => connections.sync(id),
@@ -217,8 +221,20 @@ export default function AccountsPage() {
   })
 
   const isLoading = accountsLoading || connectionsLoading
-  const manualAccounts = accountsList?.filter((a) => a.connection_id === null) ?? []
-  const bankAccounts = accountsList?.filter((a) => a.connection_id !== null) ?? []
+
+  // The collection filter is the country switch — Germany, Brazil, or all —
+  // and every other page already honours it. This one did not, so choosing
+  // Germany still listed the Sicredi accounts underneath a header that said
+  // Germany: the most confident way a page can be wrong.
+  //
+  // Filtered before the manual/bank split so `connAccounts` inherits it, and
+  // null means "all accounts" rather than "none", which is what the selector's
+  // own default sends.
+  const inCollection = (a: Account) =>
+    !activeAccountIds || activeAccountIds.includes(a.id)
+  const visibleAccounts = accountsList?.filter(inCollection) ?? []
+  const manualAccounts = visibleAccounts.filter((a) => a.connection_id === null)
+  const bankAccounts = visibleAccounts.filter((a) => a.connection_id !== null)
 
   return (
     <div className="space-y-6">
