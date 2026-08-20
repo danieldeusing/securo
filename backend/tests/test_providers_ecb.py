@@ -139,3 +139,47 @@ async def test_a_date_older_than_the_window_is_refused_not_guessed():
     is that this provider cannot say — not the oldest rate it happens to hold."""
     with pytest.raises(ValueError, match="no rate on or before"):
         await _OfflineEcb(HISTORY).fetch_historical(date(2026, 1, 1))
+
+
+class _TwoFeedEcb(EcbProvider):
+    """Serves the 90-day feed and the full series separately, counting fetches."""
+
+    def __init__(self, ninety, full):
+        self._ninety, self._full, self.fetched = ninety, full, []
+
+    async def _get(self, url):
+        self.fetched.append(url)
+        from app.providers.ecb import HISTORY_FULL_URL
+        return self._full if url == HISTORY_FULL_URL else self._ninety
+
+
+OLD = """<?xml version="1.0" encoding="UTF-8"?>
+<gesmes:Envelope xmlns:gesmes="http://www.gesmes.org/xml/2002-08-01">
+  <Cube>
+    <Cube time="2026-08-17"><Cube currency="USD" rate="1.1700"/><Cube currency="BRL" rate="6.1000"/></Cube>
+    <Cube time="2026-05-04"><Cube currency="USD" rate="1.1000"/><Cube currency="BRL" rate="5.5000"/></Cube>
+  </Cube>
+</gesmes:Envelope>"""
+
+
+@pytest.mark.asyncio
+async def test_a_date_older_than_the_window_falls_back_to_the_full_series():
+    """This household's ledger opens three weeks before the 90-day feed starts.
+
+    Failing there is not academic: the caller's fallback for "no rate" is a 1:1
+    conversion, so a balance in reais is reported as the same number of euros.
+    """
+    provider = _TwoFeedEcb(HISTORY, OLD)
+    rates = await provider.fetch_historical(date(2026, 5, 6))
+    # 2026-05-04's rate, the last published on or before the 6th.
+    assert rates["BRL"] == (Decimal("5.5000") / Decimal("1.1000")).quantize(
+        Decimal("0.0000000001"))
+    assert len(provider.fetched) == 2      # short feed first, then the full one
+
+
+@pytest.mark.asyncio
+async def test_the_full_series_is_not_fetched_when_the_short_feed_suffices():
+    """7.8 MB against 69 KB. The common question is about last Tuesday."""
+    provider = _TwoFeedEcb(HISTORY, OLD)
+    await provider.fetch_historical(date(2026, 8, 17))
+    assert len(provider.fetched) == 1

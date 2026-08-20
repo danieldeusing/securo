@@ -57,10 +57,21 @@ from app.providers.base import FxRateProvider
 logger = logging.getLogger(__name__)
 
 DAILY_URL = "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml"
-# Ninety days of history in one document. The ECB's only other archive is a zip
-# of the entire series back to 1999, which is a much larger download to answer a
-# question about last Tuesday.
+# Ninety days in one 69 KB document, which answers almost every historical
+# question this app asks — a transaction imported today, a rate restamped after
+# a sync.
 HISTORY_URL = "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-hist-90d.xml"
+
+# The whole series back to 1999, 7.8 MB. Fetched ONLY when the 90-day window
+# does not reach the date asked for, because that is the difference between a
+# 69 KB request and a 7.8 MB one on a question usually about last Tuesday.
+#
+# It has to exist, though: this household's ledger opens on 2026-05-01 and the
+# window starts three weeks later, so importing its own history asked for dates
+# the short feed cannot answer. Failing there is not academic — the rate is
+# missing, the conversion silently falls back to 1:1, and a real balance in
+# reais is reported as if it were euros.
+HISTORY_FULL_URL = "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-hist.xml"
 
 CUBE_DATE = re.compile(r"""<Cube\s+time=['"](\d{4}-\d{2}-\d{2})['"]""")
 CUBE_RATE = re.compile(r"""<Cube\s+currency=['"]([A-Z]{3})['"]\s+rate=['"]([0-9.]+)['"]""")
@@ -129,17 +140,27 @@ class EcbProvider(FxRateProvider):
         return _rebase_to_usd(by_date[newest])
 
     async def fetch_historical(self, target_date: date) -> dict[str, Decimal]:
-        by_date = _scan(await self._get(HISTORY_URL))
         wanted = target_date.isoformat()
+
         # The ECB publishes on working days only. A Saturday, a Sunday or a
         # holiday has no rate of its own, and the rate in force on that day is
         # the last one published before it — which is what a bank would have
         # used to settle. Falling forward instead would price a transaction
         # with a rate that did not yet exist when it happened.
+        by_date = _scan(await self._get(HISTORY_URL))
+        available = [day for day in by_date if day <= wanted]
+        if available:
+            return _rebase_to_usd(by_date[max(available)])
+
+        # Older than the short window. Pay for the full series rather than fail:
+        # the caller's fallback for "no rate" is a 1:1 conversion, which turns a
+        # balance in reais into the same number of euros without complaint.
+        logger.info("ECB 90-day feed does not reach %s — fetching the full series", wanted)
+        by_date = _scan(await self._get(HISTORY_FULL_URL))
         available = [day for day in by_date if day <= wanted]
         if not available:
             raise ValueError(
-                f"ECB 90-day feed has no rate on or before {wanted} — it reaches "
-                f"back only to {min(by_date) if by_date else 'nothing'}"
+                f"ECB publishes no rate on or before {wanted}; the series starts "
+                f"{min(by_date) if by_date else 'nowhere'}"
             )
         return _rebase_to_usd(by_date[max(available)])
