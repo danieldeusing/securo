@@ -583,9 +583,22 @@ async def delete_account(session: AsyncSession, account_id: uuid.UUID, workspace
     # log rows, otherwise the log delete trips transactions_import_id_fkey.
     # The transaction rows themselves cascade-delete via Account.transactions
     # when session.delete(account) flushes below.
+    # Null the link by IMPORT LOG, not by account. Nulling only the rows still
+    # in this account assumes every transaction referencing its logs is still
+    # here, and `account_id` is editable (TransactionUpdate), so moving a
+    # transaction elsewhere leaves it pointing at a log this delete is about to
+    # remove — transactions_import_id_fkey then rejects the whole delete.
+    #
+    # That is not hypothetical: folding a migrated account into its bank-
+    # connected twin moves the history across first, and deleting the emptied
+    # account failed with exactly this violation.
     await session.execute(
         update(Transaction)
-        .where(Transaction.account_id == account_id)
+        .where(
+            Transaction.import_id.in_(
+                select(ImportLog.id).where(ImportLog.account_id == account_id)
+            )
+        )
         .values(import_id=None)
     )
     await session.execute(

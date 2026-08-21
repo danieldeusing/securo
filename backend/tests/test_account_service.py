@@ -453,6 +453,49 @@ async def test_delete_account_with_import_logs(session: AsyncSession, test_user,
 
 
 @pytest.mark.asyncio
+async def test_delete_account_whose_imported_rows_were_moved_away(
+    session: AsyncSession, test_user, test_workspace
+):
+    """A transaction that left the account still references its import log.
+
+    `account_id` is editable, so history can be moved between accounts —
+    folding a migrated account into its bank-connected twin does exactly that.
+    Nulling import_id only for rows still in the account left the moved one
+    pointing at a log about to be deleted, and transactions_import_id_fkey
+    rejected the whole delete.
+    """
+    from sqlalchemy import select
+
+    source = await _make_account(session, test_user.id, "Migrated")
+    destination = await _make_account(session, test_user.id, "Bank")
+    log = ImportLog(
+        id=uuid.uuid4(), user_id=test_user.id, account_id=source.id,
+        filename="stmt.ofx", format="ofx", transaction_count=1,
+    )
+    session.add(log)
+    await session.flush()
+
+    moved = Transaction(
+        id=uuid.uuid4(), user_id=test_user.id, account_id=destination.id,
+        import_id=log.id, description="Moved before the delete",
+        amount=Decimal("10.00"), currency="BRL", type="debit", date=date.today(),
+        source="ofx",
+    )
+    session.add(moved)
+    await session.commit()
+    moved_id = moved.id
+
+    assert await delete_account(session, source.id, test_workspace.id) is True
+
+    # The row survives in its new account, minus the dangling import link.
+    kept = (await session.execute(
+        select(Transaction).where(Transaction.id == moved_id)
+    )).scalar_one()
+    assert kept.account_id == destination.id
+    assert kept.import_id is None
+
+
+@pytest.mark.asyncio
 async def test_delete_account_with_recurring_transactions(session: AsyncSession, test_user, test_workspace):
     """Regression (#110, @stanleyndachi): deleting an account with a recurring
     transaction must succeed; the recurring rows cascade away since a schedule
