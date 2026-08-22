@@ -520,7 +520,14 @@ class EnableBankingProvider(BankProvider):
         uid = raw.get("uid") or raw.get("account_uid") or ""
         currency = raw.get("currency") or "EUR"
         # EB doesn't include balances in the session payload; fetch separately.
-        balance = Decimal("0")
+        #
+        # None, not zero. A failed fetch used to leave this at Decimal("0"), the
+        # sync wrote that over the stored balance as if the bank had reported it,
+        # and sync_opening_balance_for_connected_account then inserted a matching
+        # opening row to reconcile the transactions to the new "truth". One
+        # timeout turned a 20.340,36 account into 0,00 with a -20.340,36 "Saldo
+        # inicial" beneath it, and the only trace was a WARNING in a worker log.
+        balance = None
         try:
             bal_resp = await self._request("GET", f"/accounts/{uid}/balances")
             picked = _pick_balance(bal_resp.get("balances") or [])

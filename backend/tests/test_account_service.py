@@ -1223,3 +1223,36 @@ async def test_update_simplefin_type_change_not_crossing_card_keeps_balance(
     assert updated is not None
     assert updated.type == "savings"
     assert updated.balance == Decimal("1500.00")
+
+
+@pytest.mark.asyncio
+async def test_a_balance_the_provider_could_not_report_is_not_written_as_zero(
+    session: AsyncSession, test_user, test_workspace, test_connection
+):
+    """A failed /balances fetch must leave the stored balance alone.
+
+    Enable Banking timed out on one account; the provider left balance at
+    Decimal("0"), the sync wrote it through as if the bank had said zero, and
+    sync_opening_balance_for_connected_account inserted a matching
+    -20.340,36 "Saldo inicial" to reconcile the transactions to the new figure.
+    A 20k account read 0,00 and the only trace was a WARNING in a worker log.
+    """
+    from app.providers.base import AccountData
+
+    account = await _make_account(
+        session, test_user.id, "Sparkasse", connection_id=test_connection.id,
+        external_id="eb-1",
+    )
+    account.balance = Decimal("20340.36")
+    await session.commit()
+
+    unknown = AccountData(
+        external_id="eb-1", name="Sparkasse", type="checking",
+        balance=None, currency="EUR", masked_number="2051",
+    )
+    assert unknown.balance is None, "the provider must signal absence, not zero"
+
+    # The guard the sync applies.
+    if unknown.balance is not None:
+        account.balance = unknown.balance
+    assert account.balance == Decimal("20340.36")

@@ -58,7 +58,9 @@ class AccountData:
     external_id: str
     name: str
     type: str  # checking, savings, credit_card
-    balance: Decimal
+    # None means the provider could not tell us — NOT zero. Callers must
+    # leave a stored balance alone rather than persist the absence.
+    balance: Optional[Decimal]
     currency: str
     credit_limit: Optional[Decimal] = None
     statement_close_day: Optional[int] = None

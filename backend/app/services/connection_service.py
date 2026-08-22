@@ -591,7 +591,7 @@ async def handle_oauth_callback(
             name=acc_data.name,
             masked_number=acc_data.masked_number,
             type=acc_data.type,
-            balance=acc_data.balance,
+            balance=acc_data.balance or Decimal('0'),
             currency=acc_data.currency,
             credit_limit=acc_data.credit_limit if is_cc else None,
             statement_close_day=acc_data.statement_close_day if is_cc else None,
@@ -1238,9 +1238,16 @@ async def sync_connection(
                 # label; once the user overrides the type to credit_card the
                 # downstream sites negate it, so store positive-for-debt to keep
                 # them provider-agnostic and avoid double-counting.
-                account.balance = _simplefin_to_internal_balance(
-                    connection.provider, account.type, acc_data.balance
-                )
+                # None means the provider could not tell us this time — a
+                # timeout on Enable Banking's /balances, say. Keep what we had.
+                # Writing the absence through cost 20.340,36: the balance became
+                # 0,00 and sync_opening_balance_for_connected_account then wrote
+                # a -20.340,36 "Saldo inicial" to reconcile the transactions to
+                # it. Same shape as the masked_number guard just below.
+                if acc_data.balance is not None:
+                    account.balance = _simplefin_to_internal_balance(
+                        connection.provider, account.type, acc_data.balance
+                    )
                 account.name = acc_data.name
                 # Backfills existing accounts on their next sync. Only written
                 # when the provider actually returns an identifier, so a payload
@@ -1276,7 +1283,7 @@ async def sync_connection(
                     name=acc_data.name,
                     masked_number=acc_data.masked_number,
                     type=acc_data.type,
-                    balance=acc_data.balance,
+                    balance=acc_data.balance or Decimal('0'),
                     currency=acc_data.currency,
                     credit_limit=acc_data.credit_limit if is_cc else None,
                     statement_close_day=acc_data.statement_close_day if is_cc else None,
